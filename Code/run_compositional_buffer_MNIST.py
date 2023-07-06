@@ -8,25 +8,28 @@ import models
 import datasets
 import utils
 import numpy as np
+import os
 
 utils.enable_gpu_mem_growth()
 
 # Define constants
 BATCH_SIZE = 128
-ITERS = 500
+ITERS = 5
 VAL_ITERS = 10
 VAL_BATCHES = 10
 LEARNING_RATE = 0.01
 TASKS = 5
 CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
-BUFFER_SIZES = (20, 40, 60, 80, 100)
+# BUFFER_SIZES = (20, 40, 60, 80, 100)
+BUFFER_SIZES = (10,)
 DIST_BATCH_SIZE = 256
 DIST_LEARNING_RATE = 0.01
 IMG_SHAPE = (28, 28, 1)
-K = 100
-T = 10
-RUNS = 5
-LOG_PATH = "../logs/CompositionalBuffer/MNIST"
+# K = 100
+K = 1
+T = 1
+RUNS = 1
+LOG_PATH = "D:\Studium\SoSe2023\CCMCL\logs\CompositionalBuffer\MNIST"
 
 # Create array for storing results
 res_loss = np.zeros((RUNS, len(BUFFER_SIZES)), dtype=np.float)
@@ -119,6 +122,9 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
 
         # Write results
         print("Saving results to {}...".format(LOG_PATH))
+        if not(os.path.exists(LOG_PATH)):
+            # create the directory you want to save to
+            os.mkdir(LOG_PATH)
         np.save(LOG_PATH + "/acc.npy", res_acc)
         np.savetxt(LOG_PATH + "/acc.log", res_acc, fmt="%.4f", delimiter=";",
                    header="Buffer sizes: " + str(BUFFER_SIZES))

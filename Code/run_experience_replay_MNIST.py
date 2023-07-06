@@ -19,7 +19,8 @@ VAL_BATCHES = 10
 LEARNING_RATE = 0.01
 TASKS = 5
 CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
-BUFFER_SIZES = (20, 40, 60, 80, 100)
+# BUFFER_SIZES = (20, 40, 60, 80, 100)
+BUFFER_SIZES = (20,)
 RUNS = 5
 LOG_PATH = "../logs/ExperienceReplay/MNIST"
 
