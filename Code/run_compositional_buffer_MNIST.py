@@ -9,37 +9,71 @@ import datasets
 import utils
 import numpy as np
 import os
+import wandb
+import time
 
 utils.enable_gpu_mem_growth()
 
 # Define constants
 BATCH_SIZE = 128
-ITERS = 5
+ITERS = 500
 VAL_ITERS = 10
 VAL_BATCHES = 10
 LEARNING_RATE = 0.01
 TASKS = 5
 CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 # BUFFER_SIZES = (20, 40, 60, 80, 100)
-BUFFER_SIZES = (10,)
-DIST_BATCH_SIZE = 256
+BUFFER_SIZES = (100,)
+DIST_BATCH_SIZE = 128
 DIST_LEARNING_RATE = 0.01
 IMG_SHAPE = (28, 28, 1)
-# K = 100
-K = 1
-T = 1
+K = 20
+T = 5
+I = 10
 RUNS = 1
 LOG_PATH = "D:\Studium\SoSe2023\CCMCL\logs\CompositionalBuffer\MNIST"
+
+config = {
+    'BATCH_SIZE' : BATCH_SIZE,
+    'ITERS': ITERS,
+    'VAL_ITERS': VAL_ITERS,
+    'VAL_BATCHES': VAL_BATCHES,
+    'LEARNING_RATE': LEARNING_RATE,
+    'TASKS': TASKS,
+    'CLASSES': CLASSES,
+    # BUFFER_SIZES: (20, 40, 60, 80, 100),
+    'BUFFER_SIZES': BUFFER_SIZES,
+    'DIST_BATCH_SIZE': DIST_BATCH_SIZE,
+    'DIST_LEARNING_RATE': DIST_LEARNING_RATE,
+    'IMG_SHAPE': IMG_SHAPE,
+    # K = 100
+    'K': K,
+    'T': T,
+    'I': I,
+    'RUNS': RUNS,
+    'LOG_PATH': LOG_PATH
+}
+
+wandb.init(sync_tensorboard=False,
+           name="Test: K={}, T={}, I={}".format(K, T, I),
+           project="CCMCL",
+           job_type="CleanRepo",
+           config=config
+)
 
 # Create array for storing results
 res_loss = np.zeros((RUNS, len(BUFFER_SIZES)), dtype=np.float)
 res_acc = np.zeros((RUNS, len(BUFFER_SIZES)), dtype=np.float)
+
+start_time = time.time()
 
 for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
     for run in range(RUNS):
         # Instantiate model and trainer
         model = models.CNN(10)
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        print(model.summary())
+
         buf = models.CompositionalBalancedBuffer()
         train = utils.Trainer()
 
@@ -51,8 +85,11 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
         _, val_ds, test_ds = ds.get_all()
         val_ds = val_ds.cache().repeat().batch(BATCH_SIZE).map(utils.standardize)
         test_ds = test_ds.cache().batch(BATCH_SIZE).map(utils.standardize)
+        
 
         # Train on sequence
+        
+        wandb.log({"Val_acc": 0, "Exp": 0})
         for t in range(TASKS):
             # Determine classes
             classes = CLASSES[2 * t:2 * (t + 1)]
@@ -67,7 +104,7 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
                 train_ds, _, _ = ds.get_split(c)
                 train_ds = train_ds.cache().repeat().shuffle(10000).batch(DIST_BATCH_SIZE).map(utils.standardize)
                 buf.compress_add(train_ds, c, DIST_BATCH_SIZE, LEARNING_RATE, DIST_LEARNING_RATE, IMG_SHAPE,
-                                 int(BUFFER_SIZE / len(CLASSES)), K, T, model)
+                                 int(BUFFER_SIZE / len(CLASSES)), K, T, I, model)
             buf.summary()
             # Training loop
             m_train_loss = tf.keras.metrics.Mean()
@@ -79,7 +116,7 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
                 x_r, y_r = buf.sample(BATCH_SIZE)
                 current_loss = train.train_step(x_r, y_r, model, optimizer)
                 m_train_loss.update_state(current_loss)
-                if iters % VAL_ITERS == 0:
+                if iters % VAL_ITERS == VAL_ITERS - 1:
                     # Validation
                     val_iters = 0
                     for x, y in val_ds:
@@ -104,6 +141,8 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
                             # Reset validation iterations
                             val_iters = 0
                             break
+                        
+            wandb.log({"Val_acc": val_acc, "Exp": t + 1})
 
         # Test model on complete data set
         m_test_acc = tf.keras.metrics.Accuracy()
@@ -124,7 +163,7 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
         print("Saving results to {}...".format(LOG_PATH))
         if not(os.path.exists(LOG_PATH)):
             # create the directory you want to save to
-            os.mkdir(LOG_PATH)
+            os.makedirs(LOG_PATH)
         np.save(LOG_PATH + "/acc.npy", res_acc)
         np.savetxt(LOG_PATH + "/acc.log", res_acc, fmt="%.4f", delimiter=";",
                    header="Buffer sizes: " + str(BUFFER_SIZES))
@@ -133,3 +172,6 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
                    header="Buffer sizes: " + str(BUFFER_SIZES))
         np.save(LOG_PATH + "/w_" + str(BUFFER_SIZE) + ".npy", buf.w_buffer)
         np.save(LOG_PATH + "/c_" + str(BUFFER_SIZE) + ".npy", buf.c_buffer)
+
+final_time_cost = time.time() - start_time
+wandb.log({"Final Time Cost": final_time_cost})

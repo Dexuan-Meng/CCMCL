@@ -7,6 +7,8 @@ import tensorflow_addons as tfa
 import utils
 import abc
 import numpy as np
+import wandb
+from tqdm import tqdm
     
     
 class CNN(tf.keras.Model):
@@ -57,6 +59,10 @@ class CNN(tf.keras.Model):
         output = self.flatten(output)
         output = self.dense(output)
         return output
+    
+    def model(self):
+        x = tf.keras.Input(shape=(28, 28, 1))
+        return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class BiC_CNN(tf.keras.Model):
@@ -204,6 +210,7 @@ class CompositionalCompressor(DataCompressor):
         with tf.GradientTape() as tape:
             # Make prediction using model
             with tf.GradientTape() as inner_tape:
+                # comp = tf.nn.relu(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                 comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                 logits_s = self.mdl(comp, training=False)
                 loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
@@ -226,29 +233,44 @@ class CompositionalCompressor(DataCompressor):
 
     def compress(self, ds, c, img_shape, num_synth, k, buf=None, verbose=False):
         # Create and initialize synthetic data
+        # num_synth = num_weight = 2 * int(BUFFER_SIZE / len(CLASSES)) = 20
+        # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
         c_s = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
         y_s = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_synth,), dtype=tf.int32), 10), dtype=tf.float32)
         w_s = tf.Variable(tf.random.normal((num_synth, k, 1, 1, 1), dtype=tf.float32))
 
         # Compress
         ds_iter = ds.as_numpy_iterator()
-        for k in range(self.K):
+        for k in tqdm(range(self.K)):
             # Reinitialize model
             utils.reinitialize_model(self.mdl)
             for t in range(self.T):
                 x_ds, y_ds = next(ds_iter)
                 # Perform distillation step
-                for i in range(self.I):
+                for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
+                    wandb.log({"Matching Loss": dist_loss})
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
+                    # Test how the x_t and y_t looks like.
+                    s = []
+                    for i in x_t:
+                        flag = 0
+                        for j in s:
+                            if tf.math.equal(i, j).numpy().all():
+                                flag = 1
+                        if flag == 0:
+                            s.append(i)
+                    # They are 256 batch, but oversampled from a 20 buffer.
                     x_comb = tf.concat((x_ds, x_t), axis=0)
                     y_comb = tf.concat((y_ds, y_t), axis=0)
                 else:
-                    x_comb = x_ds
-                    y_comb = y_ds
+                    x_comb = x_ds # Compress at first, then train with real data or real+syn data.
+                    y_comb = y_ds # batch size of real data and synthetic data are both 256
                 train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
+                # Training is still necessary for the verbose.
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
         return c_s, w_s, y_s
@@ -398,9 +420,9 @@ class CompositionalBalancedBuffer(object):
         self.y_buffer = []
         super(CompositionalBalancedBuffer, self).__init__()
 
-    def compress_add(self, ds, c, batch_size, train_learning_rate, dist_learning_rate, img_shape, num_synth, K, T, mdl, verbose=False):
+    def compress_add(self, ds, c, batch_size, train_learning_rate, dist_learning_rate, img_shape, num_synth, K, T, I, mdl, verbose=False):
         # Create compressor
-        comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl)
+        comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=I)
         # Compress data
         num_weights = int(2*num_synth)
         num_components = int(num_synth)
