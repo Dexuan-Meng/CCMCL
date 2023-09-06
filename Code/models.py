@@ -239,6 +239,11 @@ class CompositionalCompressor(DataCompressor):
         y_s = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_synth,), dtype=tf.int32), 10), dtype=tf.float32)
         w_s = tf.Variable(tf.random.normal((num_synth, k, 1, 1, 1), dtype=tf.float32))
 
+        # Preparation for log
+        starting_step = self.K * self.T * self.I * c
+        distill_step = 0
+        update_step = 0
+
         # Compress
         ds_iter = ds.as_numpy_iterator()
         for k in tqdm(range(self.K)):
@@ -249,7 +254,8 @@ class CompositionalCompressor(DataCompressor):
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
-                    wandb.log({"Matching Loss": dist_loss})
+                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                    distill_step += 1
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
@@ -269,6 +275,9 @@ class CompositionalCompressor(DataCompressor):
                     x_comb = x_ds # Compress at first, then train with real data or real+syn data.
                     y_comb = y_ds # batch size of real data and synthetic data are both 256
                 train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                loss_name = 'InnerLoop/Class ' + str(c)
+                wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
+                update_step += 1
                 # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
                 # Training is still necessary for the verbose.
             if verbose:

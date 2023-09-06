@@ -2,6 +2,7 @@
 This file contains utility functions.
 """
 
+import math
 import tensorflow as tf
 import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
@@ -106,3 +107,31 @@ def reinitialize_model(mdl):
                     layer.gamma.assign(layer.gamma_initializer(layer.gamma.shape))
                 if hasattr(layer, "beta"):
                     layer.beta.assign(layer.beta_initializer(layer.beta.shape))
+
+def make_grid(images, N_COLUMNS=10, PADDING=2):
+    '''
+    Make grid images frpm tf.tensors of multiple images
+    '''
+    nmaps = images.shape[0]
+    xmaps = min(N_COLUMNS, nmaps) # number of element images in x-axis
+    ymaps = int(math.ceil(float(nmaps) / xmaps)) # number of element images in y-axis
+
+    paddings = tf.constant([[1, 1,], [1, 1], [0, 0]])
+
+    index = 0 
+    columns = []
+    for y in range(ymaps+1):
+        if index == nmaps:
+            grid = tf.concat(columns, axis=0)
+            break
+        column = tf.pad(images[y * xmaps, :, :, :], paddings)
+        index += 1
+        for _ in range(xmaps - 1):
+            column = tf.concat([column, tf.pad(images[y * xmaps, :, :, :], paddings)], axis=1)
+            index += 1
+        columns.append(column)
+
+    pil_grid = tf.keras.utils.array_to_img(grid)
+
+    return pil_grid
+
