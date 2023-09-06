@@ -442,6 +442,10 @@ class CompositionalBalancedBuffer(object):
         self.w_buffer.append(w_s)
         self.y_buffer.append(y_s)
 
+    def compose_image(self, cl, idx):
+        comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
+        return comp
+
     def sample(self, k):
         # Randomly select and return k examples with their labels from the buffer
         num_classes = len(self.w_buffer)
@@ -454,7 +458,8 @@ class CompositionalBalancedBuffer(object):
                 # Sample instance
                 idx = np.squeeze(np.random.randint(0, self.w_buffer[cl].shape[0]))
                 # Compose image
-                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
+                comp = self.compose_image(cl, idx)
+                # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
                 data[i] = comp
                 labels[i] = self.y_buffer[cl][idx]
             return data, labels
@@ -468,6 +473,233 @@ class CompositionalBalancedBuffer(object):
         for i in range(len(self.w_buffer)):
             print("| Class {}: {} Instances {} components".format(i, self.w_buffer[i].shape[0], self.w_buffer[i].shape[1]))
         print("+--------------------------------------+")
+
+
+class FactorizationCompressor(DataCompressor):
+    """
+    Compresses data into a smaller set of synthetic examples.
+    """
+
+    def __init__(self, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, K, T, mdl, I=10):
+        super(CompositionalCompressor, self).__init__(batch_size, train_learning_rate, img_learning_rate, K, T, mdl, I)
+        self.img_opt = tf.keras.optimizers.RMSprop(img_learning_rate)
+        self.train_opt = tf.keras.optimizers.SGD(train_learning_rate)
+        self.styler_opt = tf.keras.optimizers.SGD(styler_learning_rate)
+
+    @tf.function
+    def distill_step(self, x, y, c_s, w_s, y_s):
+        # Minimize cosine similarity between gradients
+        with tf.GradientTape() as inner_tape:
+            logits_x = self.mdl(x, training=False)
+            loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
+        grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
+        with tf.GradientTape() as tape:
+            # Make prediction using model
+            with tf.GradientTape() as inner_tape:
+                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                logits_s = self.mdl(comp, training=False)
+                loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
+            grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
+            # Compute cosine similarity
+            dist_loss = tf.constant(0.0, dtype=tf.float32)
+            for g, gs in zip(grads, grads_s):
+                if len(g.shape) == 2:
+                    g_norm = tf.math.l2_normalize(g, axis=0)
+                    gs_norm = tf.math.l2_normalize(gs, axis=0)
+                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
+                if len(g.shape) == 4:
+                    g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
+                    gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
+                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
+                dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
+        dist_grads = tape.gradient(dist_loss, [c_s, w_s])
+        self.dist_opt.apply_gradients(zip(dist_grads, [c_s, w_s]))
+        return dist_loss
+
+    def compress(self, ds, c, img_shape, num_synth, k, buf=None, verbose=False):
+        # Create and initialize synthetic data
+        # num_synth = num_stylers * num_base = 5 * int(BUFFER_SIZE / len(CLASSES)) = 20
+        # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
+        base_s = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
+        y_s = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_synth,), dtype=tf.int32), 10), dtype=tf.float32)
+        styler_s = None
+
+        # Preparation for log
+        starting_step = self.K * self.T * self.I * c
+        distill_step = 0
+        update_step = 0
+
+        # Compress
+        ds_iter = ds.as_numpy_iterator()
+        for k in tqdm(range(self.K)):
+            # Reinitialize model
+            utils.reinitialize_model(self.mdl)
+            for t in range(self.T):
+                x_ds, y_ds = next(ds_iter)
+                # Perform distillation step
+                for i in range(self.I): # one batch of dataset distills the components I iterations
+                    dist_loss = self.distill_step(x_ds, y_ds, base_s, styler_s, y_s)
+                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                    distill_step += 1
+                # Perform training step
+                x_t, y_t = buf.sample(self.batch_size)
+                if x_t is not None:
+                    # Test how the x_t and y_t looks like.
+                    s = []
+                    for i in x_t:
+                        flag = 0
+                        for j in s:
+                            if tf.math.equal(i, j).numpy().all():
+                                flag = 1
+                        if flag == 0:
+                            s.append(i)
+                    # They are 256 batch, but oversampled from a 20 buffer.
+                    x_comb = tf.concat((x_ds, x_t), axis=0)
+                    y_comb = tf.concat((y_ds, y_t), axis=0)
+                else:
+                    x_comb = x_ds # Compress at first, then train with real data or real+syn data.
+                    y_comb = y_ds # batch size of real data and synthetic data are both 256
+                train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                loss_name = 'InnerLoop/Class ' + str(c)
+                wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
+                update_step += 1
+                # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
+                # Training is still necessary for the verbose.
+            if verbose:
+                print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
+        return base_s, styler_s, y_s
+
+
+class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
+    """
+    Buffer that adds a compression to the balanced buffer
+    """
+
+    def __init__(self):
+        self.base_buffer = []
+        self.styler_buffer = []
+        self.label_buffer = []
+        super(FactorizationBalancedBuffer, self).__init__()
+
+    def compress_add(self, ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, 
+                     img_shape, num_synth, K, T, I, mdl, verbose=False):
+        # Create compressor
+        fac = FactorizationCompressor(batch_size, train_learning_rate, img_learning_rate, 
+                                      styler_learning_rate, K, T, mdl, I=I)
+        # Compress data
+        num_stylers = 5
+        num_bases = int(num_synth)
+        print("Compressing class {} down to {} stylers and {} base images...".format(c, num_stylers, num_bases))
+        b_s, s_s, y_s = fac.compress(ds, c, img_shape, num_stylers * num_bases, num_bases, self, verbose=False)
+        # Add compressed data to buffer
+        self.base_buffer.append(b_s)
+        self.styler_buffer.append(s_s)
+        self.label_buffer.append(y_s)
+
+    def compose_image(self, cl, idx):
+        # to be modified
+        # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
+        # return comp
+        raise 'NotImplementedError'
+
+    def sample(self, batch_size):
+        # Randomly select and return k examples with their labels from the buffer
+        num_classes = len(self.base_buffer)
+        if num_classes > 0:
+            data = np.zeros((batch_size, self.base_buffer[0].shape[1], self.base_buffer[0].shape[2], self.base_buffer[0].shape[3]), dtype=np.single)
+            labels = np.zeros((batch_size, self.label_buffer[0].shape[1]), dtype=np.single)
+            for i in range(batch_size):
+                # Sample class
+                cl = np.squeeze(np.random.randint(0, num_classes, 1))
+                # Sample instance
+                idx = np.squeeze(np.random.randint(0, self.w_buffer[cl].shape[0]))
+                # Compose image
+                comp = self.compose_image(cl, idx)
+                # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
+                data[i] = comp
+                labels[i] = self.label_buffer[cl][0] # No need to sample labels, because they are all the same in one class
+            return data, labels
+        else:
+            return None, None
+
+class StyleTranslator(nn.Module):
+
+    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=32, kernel_size=1):
+        super().__init__()
+        self.enc = nn.Conv2d(in_channel, mid_channel, kernel_size)
+        self.scale = nn.Parameter(1. + torch.zeros(1, mid_channel,
+                                  image_size - kernel_size + 1, image_size - kernel_size + 1))
+        self.shift = nn.Parameter(torch.zeros(1, mid_channel,
+                                              image_size - kernel_size + 1, image_size - kernel_size + 1))
+        self.dec = nn.ConvTranspose2d(mid_channel, out_channel, kernel_size)
+
+    def forward(self, x):
+        x = self.enc(x)
+        x = self.scale * x + self.shift
+        x = self.dec(x)
+        return x
+
+class StyleTranslator(tf.keras.Model):
+    """
+    Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
+    """
+
+    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=1):
+        self.in_channel = in_channel
+        self.mid_channel = mid_channel
+        self.out_channel = out_channel
+        self.image_size = image_size
+        self.kernel_size = kernel_size
+        self.enc = None
+        self.scale = None
+        self.shift = None
+        self.dec = None
+
+    def build(self, input_shape):
+        self.enc = tf.keras.layers.Conv2D(self.in_channel, self.mid_channel, activation="linear", padding="SAME")
+        self.scale = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.shift = tfa.layers.InstanceNormalization()
+        self.dec = ttf.keras.layers.Conv2DTranspose(
+    filters,
+    kernel_size,
+    strides=(1, 1),
+    padding='valid',
+    output_padding=None,
+    data_format=None,
+    dilation_rate=(1, 1),
+    activation=None,
+    use_bias=True,
+    kernel_initializer='glorot_uniform',
+    bias_initializer='zeros',
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
+    **kwargs
+)
+        super(StyleTranslator, self).build(input_shape)
+        
+    def call(self, inputs, training=None):
+        output = self.conv0(inputs)
+        output = self.norm0(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv1(output)
+        output = self.norm1(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv2(output)
+        output = self.norm2(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.flatten(output)
+        output = self.dense(output)
+        return output
+    
+    def model(self):
+        x = tf.keras.Input(shape=(28, 28, 1))
+        return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class BiCBuffer(AbstractBuffer):
