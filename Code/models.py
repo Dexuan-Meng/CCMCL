@@ -622,22 +622,6 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         else:
             return None, None
 
-class StyleTranslator(nn.Module):
-
-    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=32, kernel_size=1):
-        super().__init__()
-        self.enc = nn.Conv2d(in_channel, mid_channel, kernel_size)
-        self.scale = nn.Parameter(1. + torch.zeros(1, mid_channel,
-                                  image_size - kernel_size + 1, image_size - kernel_size + 1))
-        self.shift = nn.Parameter(torch.zeros(1, mid_channel,
-                                              image_size - kernel_size + 1, image_size - kernel_size + 1))
-        self.dec = nn.ConvTranspose2d(mid_channel, out_channel, kernel_size)
-
-    def forward(self, x):
-        x = self.enc(x)
-        x = self.scale * x + self.shift
-        x = self.dec(x)
-        return x
 
 class StyleTranslator(tf.keras.Model):
     """
@@ -648,7 +632,7 @@ class StyleTranslator(tf.keras.Model):
         self.in_channel = in_channel
         self.mid_channel = mid_channel
         self.out_channel = out_channel
-        self.image_size = image_size
+        self.img_size = image_size
         self.kernel_size = kernel_size
         self.enc = None
         self.scale = None
@@ -656,45 +640,22 @@ class StyleTranslator(tf.keras.Model):
         self.dec = None
 
     def build(self, input_shape):
-        self.enc = tf.keras.layers.Conv2D(self.in_channel, self.mid_channel, activation="linear", padding="SAME")
-        self.scale = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
-        self.shift = tfa.layers.InstanceNormalization()
-        self.dec = ttf.keras.layers.Conv2DTranspose(
-    filters,
-    kernel_size,
-    strides=(1, 1),
-    padding='valid',
-    output_padding=None,
-    data_format=None,
-    dilation_rate=(1, 1),
-    activation=None,
-    use_bias=True,
-    kernel_initializer='glorot_uniform',
-    bias_initializer='zeros',
-    kernel_regularizer=None,
-    bias_regularizer=None,
-    activity_regularizer=None,
-    kernel_constraint=None,
-    bias_constraint=None,
-    **kwargs
-)
+        self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size)
+        self.scale = tf.Variable(
+            tf.ones((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
+                    dtype=tf.dtypes.float32)
+            )
+        self.shift = tf.Variable(
+            tf.zeros((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
+                    dtype=tf.dtypes.float32)
+            )
+        self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size)
         super(StyleTranslator, self).build(input_shape)
         
     def call(self, inputs, training=None):
-        output = self.conv0(inputs)
-        output = self.norm0(output)
-        output = self.relu(output)
-        output = self.pool(output)
-        output = self.conv1(output)
-        output = self.norm1(output)
-        output = self.relu(output)
-        output = self.pool(output)
-        output = self.conv2(output)
-        output = self.norm2(output)
-        output = self.relu(output)
-        output = self.pool(output)
-        output = self.flatten(output)
-        output = self.dense(output)
+        output = self.enc(inputs)
+        output = self.scale * output + self.shift
+        output = self.dec(output)
         return output
     
     def model(self):
