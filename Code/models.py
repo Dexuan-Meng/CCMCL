@@ -778,6 +778,67 @@ class StyleTranslator(tf.keras.Model):
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
-class Extractor():
-    def __init__():
-        pass
+class Extractor(tf.keras.Model):
+    """
+    Model to extract feature vector for similarity/divergence measuring
+    """
+
+    def __init__(self, n_classes, channel=3, image_size=32):
+        super(Extractor, self).__init__()
+
+        self.n_classes = n_classes
+        self.channel = channel
+        self.image_size = image_size
+
+        self.conv0 = None
+        self.norm0 = None
+
+        self.conv1 = None
+        self.norm1 = None
+        
+        self.conv2 = None
+        self.norm2 = None
+
+        self.relu = None
+        self.pool = None
+        self.flatten = None
+        self.classifier = None
+
+        self.zeropadding = None
+
+    def build(self, input_shape):
+        self.relu = tf.keras.layers.Activation("relu")
+        self.conv0 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm0 = tfa.layers.InstanceNormalization()
+        self.conv1 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm1 = tfa.layers.InstanceNormalization()
+        self.conv2 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm2 = tfa.layers.InstanceNormalization()
+        self.pool = tf.keras.layers.AveragePooling2D()
+        self.flatten = tf.keras.layers.Flatten()
+        self.dense = tf.keras.layers.Dense(self.n_classes, activation="linear")
+        self.zeropadding = tf.keras.layers.ZeroPadding2D(padding=(3, 3))
+        super(Extractor, self).build(input_shape)
+        
+    def call(self, inputs, training=None):
+        if self.channel == 1:
+            inputs = self.zeropadding(inputs)
+        output = self.conv0(inputs)
+        output = self.norm0(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv1(output)
+        output = self.norm1(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv2(output)
+        output = self.norm2(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        feat = self.flatten(output)
+        logits = self.dense(feat)
+        return feat, logits
+    
+    def model(self):
+        x = tf.keras.Input(shape=(28, 28, 1))
+        return tf.keras.Model(inputs=[x], outputs=self.call(x))
