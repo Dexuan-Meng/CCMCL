@@ -19,7 +19,7 @@ def main(args):
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     wandb.init(sync_tensorboard=False,
-            name="Log image: K={}, T={}, I={}".format(args.K, args.T, args.I),
+            name="structure test: K={}, T={}, I={}".format(args.K, args.T, args.I),
             project="CCMCL",
             job_type="CleanRepo",
             config=args
@@ -41,7 +41,11 @@ def main(args):
     model = models.CNN(10)
     model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
     # print(model.summary())
-    buf = models.CompositionalBalancedBuffer()
+    if args.plugin == 'Compositional':
+        buf = models.CompositionalBalancedBuffer()
+    elif args.plugin == 'Factorization':
+        buf = models.FactorizationBalancedBuffer()
+
     train = utils.Trainer()
 
     # Instantiate optimizer
@@ -66,14 +70,15 @@ def main(args):
             # Load data set
             train_ds, _, _ = ds.get_split(c)
             train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
-            buf.compress_add(train_ds, c, args.DIST_BATCH_SIZE, args.LEARNING_RATE, args.DIST_LEARNING_RATE, IMG_SHAPE,
+            buf.compress_add(train_ds, c, args.DIST_BATCH_SIZE, args.LEARNING_RATE, args.DIST_LEARNING_RATE, args.styler_lr, IMG_SHAPE,
                             int(args.BUFFER_SIZE / len(CLASSES)), args.K, args.T, args.I, model)
         buf.summary()
 
         for cl in classes:
-            grid = make_grid(buf.c_buffer[cl])
+            grid = make_grid(buf.buffer_box[0][cl])
             wandb.log({'BaseImages/class_{}'.format(cl): wandb.Image(grid)})
-            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(buf.w_buffer[cl], tf.expand_dims(buf.c_buffer[cl], axis=0)), axis=1))
+            comp = buf.compose_image(buf.buffer_box[0], buf.buffer_box[1], cl)
+            # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(buf.buffer_box[1][cl], tf.expand_dims(buf.buffer_box[0][cl], axis=0)), axis=1))
             grid = make_grid(comp)
             wandb.log({'SynImages/class_{}'.format(cl): wandb.Image(grid)})
 
@@ -151,6 +156,8 @@ if __name__ == "__main__":
                         help='learning rate for training (updating networks)')
     parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for distillation (updating images)')
+    parser.add_argument('--styler_lr', type=float, default=0.01,
+                        help='learning rate for distillation (updating styler)')
     parser.add_argument('--BATCH_SIZE', type=int, default=128,
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
@@ -170,8 +177,8 @@ if __name__ == "__main__":
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
     
-    parser.add_argument('--plugin', type=str, default='Compositional', 
-                        choices=['Compositional', 'Compressed'],
+    parser.add_argument('--plugin', type=str, default='Factorization', 
+                        choices=['Compositional', 'Compressed', 'Factorization'],
                         help='method for condensation')
 
     args = parser.parse_args()
