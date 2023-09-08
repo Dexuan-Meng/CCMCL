@@ -575,7 +575,9 @@ class FactorizationCompressor(DataCompressor):
     def __init__(self, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, K, T, mdl, I=10):
         super(FactorizationCompressor, self).__init__(batch_size, train_learning_rate, img_learning_rate, K, T, mdl, I=I)
         self.img_opt = tf.keras.optimizers.RMSprop(img_learning_rate)
-        self.train_opt = tf.keras.optimizers.SGD(train_learning_rate)
+        self.net_opt = tf.keras.optimizers.SGD(train_learning_rate)
+        self.extractor_opt = tf.keras.optimizers.SGD(train_learning_rate)
+        
         self.styler_opt = tf.keras.optimizers.SGD(styler_learning_rate)
 
     @tf.function
@@ -781,6 +783,7 @@ class StyleTranslator(tf.keras.Model):
 class Extractor(tf.keras.Model):
     """
     Model to extract feature vector for similarity/divergence measuring
+    Almost the same as CNN
     """
 
     def __init__(self, n_classes, channel=3, image_size=32):
