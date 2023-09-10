@@ -572,43 +572,115 @@ class FactorizationCompressor(DataCompressor):
     Compresses data into a smaller set of synthetic examples.
     """
 
-    def __init__(self, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, K, T, mdl, I=10):
+    def __init__(self, class_label, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, K, T, mdl, 
+                 I=10, img_shape=(28, 28, 1), lambda_club_content= 10, lambda_cls_content = 1, lambda_likeli_content=1,
+                 lambda_contrast_content=1):
         super(FactorizationCompressor, self).__init__(batch_size, train_learning_rate, img_learning_rate, K, T, mdl, I=I)
-        self.img_opt = tf.keras.optimizers.RMSprop(img_learning_rate)
+        self.class_label = class_label
+        self.img_size = img_shape[0]
+        self.dist_opt = tf.keras.optimizers.RMSprop(img_learning_rate)
         self.net_opt = tf.keras.optimizers.SGD(train_learning_rate)
-        self.extractor_opt = tf.keras.optimizers.SGD(train_learning_rate)
-        
+        self.extractor_opt = tf.keras.optimizers.SGD(5 * train_learning_rate)
         self.styler_opt = tf.keras.optimizers.SGD(styler_learning_rate)
+        self.extractor = Extractor(10, channel=img_shape[2], image_size=img_shape[0])
+        self.cosine_similarity = tf.keras.losses.CosineSimilarity()
+        self.contrastive_loss = utils.SupConLoss()
+        self.lambda_club_content = lambda_club_content
+        self.lambda_cls_content = lambda_cls_content
+        self.lambda_likeli_content = lambda_likeli_content
+        self.lambda_contrast_content = lambda_contrast_content
 
     @tf.function
     def distill_step(self, x, y, c_s, w_s, y_s):
+
         # Minimize cosine similarity between gradients
         with tf.GradientTape() as inner_tape:
             logits_x = self.mdl(x, training=False)
             loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
         grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
-        with tf.GradientTape() as tape:
-            # Make prediction using model
-            with tf.GradientTape() as inner_tape:
-                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
-                logits_s = self.mdl(comp, training=False)
-                loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
-            grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
-            # Compute cosine similarity
-            dist_loss = tf.constant(0.0, dtype=tf.float32)
-            for g, gs in zip(grads, grads_s):
-                if len(g.shape) == 2:
-                    g_norm = tf.math.l2_normalize(g, axis=0)
-                    gs_norm = tf.math.l2_normalize(gs, axis=0)
-                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
-                if len(g.shape) == 4:
-                    g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
-                    gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
-                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
-                dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
-        dist_grads = tape.gradient(dist_loss, [c_s, w_s])
-        self.dist_opt.apply_gradients(zip(dist_grads, [c_s, w_s]))
+
+        with tf.GradientTape() as tape_w_s:
+            with tf.GradientTape() as tape_c_s:
+
+                # Make prediction using model
+                with tf.GradientTape() as inner_tape:
+                    comp = self.compose_image(c_s, w_s)
+                    comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    logits_s = self.mdl(comp, training=False)
+                    loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
+                grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
+
+                # Compute matching loss
+                dist_loss = tf.constant(0.0, dtype=tf.float32)
+                for g, gs in zip(grads, grads_s):
+                    if len(g.shape) == 2:
+                        g_norm = tf.math.l2_normalize(g, axis=0)
+                        gs_norm = tf.math.l2_normalize(gs, axis=0)
+                        inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
+                    if len(g.shape) == 4:
+                        g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
+                        gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
+                        inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
+                    dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
+            
+                # compute cosine similarity
+                club_content_loss = 0
+                for i in range(100):
+                    indices = np.squeeze(np.random.randint(0, 20, 2))
+                    twin_image_0 = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s[indices[0], :, :, :, :], tf.expand_dims(c_s, axis=0)), axis=1))
+                    twin_image_1 = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s[indices[1], :, :, :, :], tf.expand_dims(c_s, axis=0)), axis=1))
+                    twin_image = tf.concat((twin_image_0, twin_image_1), axis=0)
+                    embed_c, _ = self.extractor(twin_image)
+                    club_content_loss += tf.reduce_mean(((self.cosine_similarity(embed_c[0], embed_c[1]) + 1.) / 2.))
+
+                loss = dist_loss + self.lambda_club_content * club_content_loss
+
+        dist_grad_w_s = tape_c_s.gradient(loss, [w_s])
+        dist_grad_c_s = tape_w_s.gradient(loss, [c_s])
+        self.styler_opt.apply_gradients(zip(dist_grad_w_s, [w_s]))
+        self.dist_opt.apply_gradients(zip(dist_grad_c_s, [c_s]))
+
         return dist_loss
+    
+    @tf.function
+    def update_extractor(self, x, y, c_s, w_s, y_s):
+        # compute contrastive loss and update extractor
+        sim_content_loss = 0
+        with tf.GradientTape() as tape_extractor:
+            
+            _, ds_logits = self.extractor(x)
+            cls_content_loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, ds_logits, from_logits=True))
+
+            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+            indices = tf.range(start=0, limit=tf.shape(comp)[0], dtype=tf.int32)
+            shuffled_indices = tf.random.shuffle(indices)
+            # indices = list(np.squeeze(np.random.permutation(comp.shape[0])))
+            comp_shuffled = tf.gather(comp, shuffled_indices)
+            twin_label = y_s
+            embed_c, twin_logits = self.extractor(comp_shuffled)
+            
+            likeli_content_loss = tf.reduce_mean(((1. - self.cosine_similarity(embed_c[:c_s.shape[0]], embed_c[c_s.shape[0]:])) / 2.))
+            embed_c_0, _ = tf.linalg.normalize(embed_c[:c_s.shape[0]])
+            embed_c_1, _ = tf.linalg.normalize(embed_c[c_s.shape[0]:])
+            twin_label = tf.argmax(twin_label, axis=1)[0]
+            contrast_content_loss = self.contrastive_loss(
+                tf.stack([embed_c_0, embed_c_1], axis=1), 
+                self.class_label * tf.ones([c_s.shape[0]])
+                )
+            
+            sim_content_loss = sim_content_loss + cls_content_loss * self.lambda_cls_content \
+                                                + likeli_content_loss * self.lambda_likeli_content \
+                                                + contrast_content_loss * self.lambda_contrast_content
+
+        dist_grad_extractor = tape_extractor.gradient(sim_content_loss, self.extractor.trainable_variables)
+        self.extractor_opt.apply_gradients(zip(dist_grad_extractor, self.extractor.trainable_variables))
+
+    @staticmethod
+    def compose_image(base_image, styler):
+        # to be modified
+        comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(styler, tf.expand_dims(base_image, axis=0)), axis=1))
+        return comp
+        # raise 'NotImplementedError'
 
     def compress(self, ds, c, img_shape, num_synth, k, buf=None, verbose=False):
         # Create and initialize synthetic data
@@ -634,6 +706,7 @@ class FactorizationCompressor(DataCompressor):
                 for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss = self.distill_step(x_ds, y_ds, base_s, styler_s, y_s)
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                    self.update_extractor(x_ds, y_ds, base_s, styler_s, y_s)
                     distill_step += 1
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
@@ -678,10 +751,10 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
     def compress_add(self, ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, 
                      img_shape, num_synth, K, T, I, mdl, verbose=False):
         # Create compressor
-        fac = FactorizationCompressor(batch_size, train_learning_rate, img_learning_rate, 
-                                      styler_learning_rate, K, T, mdl, I=I)
+        fac = FactorizationCompressor(c, batch_size, train_learning_rate, img_learning_rate, 
+                                      styler_learning_rate, K, T, mdl, I=I, img_shape=img_shape)
         # Compress data
-        num_stylers = 5
+        num_stylers = 2
         num_bases = int(num_synth)
         print("Compressing class {} down to {} stylers and {} base images...".format(c, num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(ds, c, img_shape, num_stylers * num_bases, num_bases, self, verbose=False)

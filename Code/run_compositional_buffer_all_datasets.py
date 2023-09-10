@@ -154,7 +154,7 @@ if __name__ == "__main__":
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
@@ -166,7 +166,7 @@ if __name__ == "__main__":
                         help='number of iterations for validation training')
     parser.add_argument('--VAL_ITERS', type=int, default=100,
                         help='Validation interval during test training')
-    parser.add_argument('--VAL_BATCHES', type=int, default=100,
+    parser.add_argument('--VAL_BATCHES', type=int, default=200,
                         help='Batchsize for validation')
     
     # Hyperparameters to be heavily tuned
@@ -177,6 +177,11 @@ if __name__ == "__main__":
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
     
+    parser.add_argument('--lambda_club_content', type=float, default=10)
+    parser.add_argument('--lambda_likeli_content', type=float, default= 1)
+    parser.add_argument('--lambda_cls_content', type=float, default=1)
+    parser.add_argument('--lambda_contrast_content', type=float, default=1)
+
     parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization'],
                         help='method for condensation')
