@@ -716,12 +716,11 @@ class FactorizationCompressor(DataCompressor):
                 else:
                     x_comb = x_ds # Compress at first, then train with real data or real+syn data.
                     y_comb = y_ds # batch size of real data and synthetic data are both 256
-                train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                for _ in range(c):
+                    train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
                 loss_name = 'InnerLoop/Class ' + str(c)
                 wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
                 update_step += 1
-                # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
-                # Training is still necessary for the verbose.
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
         return self.base_image, self.stylers, self.syn_label
@@ -796,17 +795,6 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
             indices = list(indices % tf.shape(self.syn_images)[0,].numpy())[:batch_size]
             data = tf.gather(self.syn_images, indices).numpy()
             labels = tf.gather(self.syn_labels, indices).numpy()
-
-            # for i in range(batch_size):
-            #     # Sample class
-            #     cl = np.squeeze(np.random.randint(0, num_classes, 1))
-            #     # Sample instance
-            #     idx_base_image = np.squeeze(np.random.randint(0, self.base_buffer[0].shape[0]))
-            #     idx_styler = np.squeeze(np.random.randint(0, len(self.styler_buffer[cl])))
-            #     # Compose image
-            #     comp = self.compose_image(self.base_buffer, self.styler_buffer, cl, idx_base_image, idx_styler)
-            #     data[i] = comp
-            #     labels[i] = self.label_buffer[cl][0] # No need to sample labels, because they are all the same in one class
 
             return data, labels
         else:
