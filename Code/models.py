@@ -590,8 +590,13 @@ class FactorizationCompressor(DataCompressor):
         self.lambda_likeli_content = lambda_likeli_content
         self.lambda_contrast_content = lambda_contrast_content
 
+        self.base_image = None
+        self.syn_label = None
+        self.stylers = []
+
+
     @tf.function
-    def distill_step(self, x, y, c_s, w_s, y_s):
+    def distill_step(self, x, y):
 
         # Minimize cosine similarity between gradients
         with tf.GradientTape() as inner_tape:
@@ -604,10 +609,10 @@ class FactorizationCompressor(DataCompressor):
 
                 # Make prediction using model
                 with tf.GradientTape() as inner_tape:
-                    comp = self.compose_image(c_s, w_s)
-                    comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    comp = self.compose_image(self.base_image, self.stylers)
+                    # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(self.base_image, axis=0)), axis=1))
                     logits_s = self.mdl(comp, training=False)
-                    loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
+                    loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(self.syn_label, logits_s, from_logits=True))
                 grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
 
                 # Compute matching loss
@@ -622,28 +627,26 @@ class FactorizationCompressor(DataCompressor):
                         gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
                         inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
                     dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
-            
+
                 # compute cosine similarity
-                club_content_loss = 0
-                for i in range(100):
-                    indices = np.squeeze(np.random.randint(0, 20, 2))
-                    twin_image_0 = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s[indices[0], :, :, :, :], tf.expand_dims(c_s, axis=0)), axis=1))
-                    twin_image_1 = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s[indices[1], :, :, :, :], tf.expand_dims(c_s, axis=0)), axis=1))
-                    twin_image = tf.concat((twin_image_0, twin_image_1), axis=0)
-                    embed_c, _ = self.extractor(twin_image)
-                    club_content_loss += tf.reduce_mean(((self.cosine_similarity(embed_c[0], embed_c[1]) + 1.) / 2.))
+                twin_image = self.get_twin_image()
+                embed_c, _ = self.extractor(twin_image)
+                club_content_loss = tf.reduce_mean(((self.cosine_similarity(embed_c[0], embed_c[1]) + 1.) / 2.))
 
                 loss = dist_loss + self.lambda_club_content * club_content_loss
 
-        dist_grad_w_s = tape_c_s.gradient(loss, [w_s])
-        dist_grad_c_s = tape_w_s.gradient(loss, [c_s])
-        self.styler_opt.apply_gradients(zip(dist_grad_w_s, [w_s]))
-        self.dist_opt.apply_gradients(zip(dist_grad_c_s, [c_s]))
+        stylers_trainable_variables = []
+        for i in range(len(self.stylers)):
+            stylers_trainable_variables.extend(self.stylers[i].trainable_variables)
+        dist_grad_w_s = tape_c_s.gradient(loss, stylers_trainable_variables)
+        dist_grad_c_s = tape_w_s.gradient(loss, [self.base_image])
+        self.styler_opt.apply_gradients(zip(dist_grad_w_s, stylers_trainable_variables))
+        self.dist_opt.apply_gradients(zip(dist_grad_c_s, [self.base_image]))
 
         return dist_loss
     
     @tf.function
-    def update_extractor(self, x, y, c_s, w_s, y_s):
+    def update_extractor(self, x, y):
         # compute contrastive loss and update extractor
         sim_content_loss = 0
         with tf.GradientTape() as tape_extractor:
@@ -651,21 +654,14 @@ class FactorizationCompressor(DataCompressor):
             _, ds_logits = self.extractor(x)
             cls_content_loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, ds_logits, from_logits=True))
 
-            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
-            indices = tf.range(start=0, limit=tf.shape(comp)[0], dtype=tf.int32)
-            shuffled_indices = tf.random.shuffle(indices)
-            # indices = list(np.squeeze(np.random.permutation(comp.shape[0])))
-            comp_shuffled = tf.gather(comp, shuffled_indices)
-            twin_label = y_s
-            embed_c, twin_logits = self.extractor(comp_shuffled)
-            
-            likeli_content_loss = tf.reduce_mean(((1. - self.cosine_similarity(embed_c[:c_s.shape[0]], embed_c[c_s.shape[0]:])) / 2.))
-            embed_c_0, _ = tf.linalg.normalize(embed_c[:c_s.shape[0]])
-            embed_c_1, _ = tf.linalg.normalize(embed_c[c_s.shape[0]:])
-            twin_label = tf.argmax(twin_label, axis=1)[0]
+            twin_image = self.get_twin_image()
+            embed_c, _ = self.extractor(twin_image)
+            likeli_content_loss = tf.reduce_mean(((1. - self.cosine_similarity(embed_c[:self.base_image.shape[0]], embed_c[self.base_image.shape[0]:])) / 2.))
+            embed_c_0, _ = tf.linalg.normalize(embed_c[:self.base_image.shape[0]])
+            embed_c_1, _ = tf.linalg.normalize(embed_c[self.base_image.shape[0]:])
             contrast_content_loss = self.contrastive_loss(
                 tf.stack([embed_c_0, embed_c_1], axis=1), 
-                self.class_label * tf.ones([c_s.shape[0]])
+                tf.argmax(self.syn_label, axis=1)[:self.base_image.shape[0]]
                 )
             
             sim_content_loss = sim_content_loss + cls_content_loss * self.lambda_cls_content \
@@ -676,19 +672,32 @@ class FactorizationCompressor(DataCompressor):
         self.extractor_opt.apply_gradients(zip(dist_grad_extractor, self.extractor.trainable_variables))
 
     @staticmethod
-    def compose_image(base_image, styler):
-        # to be modified
-        comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(styler, tf.expand_dims(base_image, axis=0)), axis=1))
+    def compose_image(base_image, stylers):
+        '''
+        Concatenate synthetic images hallucinated by all stylers.
+        '''
+        syn_images = []
+        for i in range(len(stylers)):
+            syn_images.append(stylers[i](base_image))
+        comp = tf.concat(syn_images, axis=0)
         return comp
-        # raise 'NotImplementedError'
 
-    def compress(self, ds, c, img_shape, num_synth, k, buf=None, verbose=False):
+    @tf.function
+    def get_twin_image(self):
+        indices = np.random.permutation(len(self.stylers))
+        twin_image = tf.concat((self.stylers[indices[0]](self.base_image), self.stylers[indices[1]](self.base_image)), axis=0)
+        return twin_image
+    
+    def compress(self, ds, c, img_shape, num_stylers, k, buf=None, verbose=False):
+
         # Create and initialize synthetic data
-        # num_synth = num_stylers * num_base = 5 * int(BUFFER_SIZE / len(CLASSES)) = 20
         # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
-        base_s = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
-        y_s = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_synth,), dtype=tf.int32), 10), dtype=tf.float32)
-        styler_s = tf.Variable(tf.random.normal((num_synth, k, 1, 1, 1), dtype=tf.float32))
+        self.base_image = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
+        self.syn_label = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_stylers * k,), dtype=tf.int32), 10), dtype=tf.float32)
+        for _ in range(num_stylers):
+            styler = StyleTranslator(in_channel=img_shape[2], mid_channel=3, out_channel=img_shape[2], image_size=img_shape, kernel_size=3)
+            styler.build((None, img_shape[0], img_shape[1], img_shape[2]))
+            self.stylers.append(styler)
 
         # Preparation for log
         starting_step = self.K * self.T * self.I * c
@@ -704,9 +713,9 @@ class FactorizationCompressor(DataCompressor):
                 x_ds, y_ds = next(ds_iter)
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss = self.distill_step(x_ds, y_ds, base_s, styler_s, y_s)
+                    dist_loss = self.distill_step(x_ds, y_ds)
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                    self.update_extractor(x_ds, y_ds, base_s, styler_s, y_s)
+                    self.update_extractor(x_ds, y_ds)
                     distill_step += 1
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
@@ -734,7 +743,7 @@ class FactorizationCompressor(DataCompressor):
                 # Training is still necessary for the verbose.
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
-        return base_s, styler_s, y_s
+        return self.base_image, self.stylers, self.syn_label
 
 
 class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
@@ -748,16 +757,19 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         self.label_buffer = []
         self.buffer_box = []
 
-    def compress_add(self, ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, 
-                     img_shape, num_synth, K, T, I, mdl, verbose=False):
+    def compress_add(self, ds, c, mdl, verbose=False, batch_size=128, train_learning_rate=0.01,
+                     img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
+                     num_bases=10, K=10, T=10, I=10, lambda_club_content=10, lambda_cls_content = 1, 
+                     lambda_likeli_content=1, lambda_contrast_content=1):
         # Create compressor
-        fac = FactorizationCompressor(c, batch_size, train_learning_rate, img_learning_rate, 
-                                      styler_learning_rate, K, T, mdl, I=I, img_shape=img_shape)
+        fac = FactorizationCompressor(c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
+                                      K, T, mdl, I=I, img_shape=img_shape, lambda_club_content=lambda_club_content, 
+                                      lambda_cls_content = lambda_cls_content, lambda_likeli_content=lambda_likeli_content,
+                                      lambda_contrast_content=lambda_contrast_content)
         # Compress data
         num_stylers = 2
-        num_bases = int(num_synth)
         print("Compressing class {} down to {} stylers and {} base images...".format(c, num_stylers, num_bases))
-        b_s, s_s, y_s = fac.compress(ds, c, img_shape, num_stylers * num_bases, num_bases, self, verbose=False)
+        b_s, s_s, y_s = fac.compress(ds, c, img_shape, num_stylers, num_bases, self, verbose=False)
         # Add compressed data to buffer
         self.base_buffer.append(b_s)
         self.styler_buffer.append(s_s)
@@ -768,12 +780,15 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         self.buffer_box.append(self.label_buffer)
 
     @staticmethod
-    def compose_image(base_buffer, styler_buffer, cl, idx=None):
+    def compose_image(base_buffer, styler_buffer, cl, idx_base_image=None, idx_styler=None):
         # to be modified
-        if idx is None:
-            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(styler_buffer[cl], tf.expand_dims(base_buffer[cl], axis=0)), axis=1))
+        if idx_base_image is None:
+            syn_images = []
+            for i in range(len(styler_buffer[cl])):
+                syn_images.append(styler_buffer[cl][i](base_buffer[cl]))
+            comp = tf.concat(syn_images, axis=0)
         else:
-            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(styler_buffer[cl][idx], tf.expand_dims(base_buffer[cl], axis=0)), axis=1))
+            comp = styler_buffer[cl][idx_styler](tf.expand_dims(base_buffer[cl][idx_base_image], axis=0))
         return comp
         # raise 'NotImplementedError'
 
@@ -787,9 +802,10 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
                 # Sample class
                 cl = np.squeeze(np.random.randint(0, num_classes, 1))
                 # Sample instance
-                idx = np.squeeze(np.random.randint(0, self.styler_buffer[cl].shape[0]))
+                idx_base_image = np.squeeze(np.random.randint(0, self.base_buffer[0].shape[0]))
+                idx_styler = np.squeeze(np.random.randint(0, len(self.styler_buffer[cl])))
                 # Compose image
-                comp = self.compose_image(self.base_buffer, self.styler_buffer, cl, idx)
+                comp = self.compose_image(self.base_buffer, self.styler_buffer, cl, idx_base_image, idx_styler)
                 data[i] = comp
                 labels[i] = self.label_buffer[cl][0] # No need to sample labels, because they are all the same in one class
             return data, labels
@@ -800,8 +816,8 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         print("| Summary                              |")
         print("+======================================+")
         for i in range(len(self.styler_buffer)):
-            print("| Class {}: {} Instances {} components".format(i, 
-                                                                  self.styler_buffer[i].shape[0] * self.base_buffer[i].shape[0], 
+            print("| Class {}: {} stylers {} components".format(i, 
+                                                                  len(self.styler_buffer[i]), 
                                                                   self.base_buffer[i].shape[0]
                                                                   )
                 )

@@ -55,6 +55,22 @@ def main(args):
     
     wandb.log({"Validation/Val_acc": 0, "Validation/Task": 0})
 
+    condensation_args = {
+        'batch_size': args.BATCH_SIZE,
+        'train_learning_rate': args.LEARNING_RATE,
+        'img_learning_rate': args.DIST_LEARNING_RATE,
+        'styler_learning_rate': args.styler_lr,
+        'img_shape': IMG_SHAPE,
+        'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
+        'K': args.K,
+        'T': args.T,
+        'I': args.I,
+        'lambda_club_content': args.lambda_club_content,
+        'lambda_likeli_content': args.lambda_likeli_content,
+        'lambda_cls_content': args.lambda_cls_content,
+        'lambda_contrast_content': args.lambda_contrast_content
+    }
+
     for t in range(args.TASKS):
 
         # Determine classes
@@ -70,8 +86,7 @@ def main(args):
             # Load data set
             train_ds, _, _ = ds.get_split(c)
             train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
-            buf.compress_add(train_ds, c, args.DIST_BATCH_SIZE, args.LEARNING_RATE, args.DIST_LEARNING_RATE, args.styler_lr, IMG_SHAPE,
-                            int(args.BUFFER_SIZE / len(CLASSES)), args.K, args.T, args.I, model)
+            buf.compress_add(train_ds, c, model, **condensation_args)
         buf.summary()
 
         for cl in classes:
@@ -162,17 +177,17 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=100,
+    parser.add_argument('--ITERS', type=int, default=200,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=100,
+    parser.add_argument('--VAL_ITERS', type=int, default=200,
                         help='Validation interval during test training')
-    parser.add_argument('--VAL_BATCHES', type=int, default=200,
+    parser.add_argument('--VAL_BATCHES', type=int, default=100,
                         help='Batchsize for validation')
     
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=10, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=2,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
