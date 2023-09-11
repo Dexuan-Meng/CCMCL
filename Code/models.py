@@ -259,16 +259,6 @@ class CompositionalCompressor(DataCompressor):
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
-                    # Test how the x_t and y_t looks like.
-                    s = []
-                    for i in x_t:
-                        flag = 0
-                        for j in s:
-                            if tf.math.equal(i, j).numpy().all():
-                                flag = 1
-                        if flag == 0:
-                            s.append(i)
-                    # They are 256 batch, but oversampled from a 20 buffer.
                     x_comb = tf.concat((x_ds, x_t), axis=0)
                     y_comb = tf.concat((y_ds, y_t), axis=0)
                 else:
@@ -717,19 +707,10 @@ class FactorizationCompressor(DataCompressor):
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
                     self.update_extractor(x_ds, y_ds)
                     distill_step += 1
-                # Perform training step
+
+                # Perform innerloop training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
-                    # Test how the x_t and y_t looks like.
-                    s = []
-                    for i in x_t:
-                        flag = 0
-                        for j in s:
-                            if tf.math.equal(i, j).numpy().all():
-                                flag = 1
-                        if flag == 0:
-                            s.append(i)
-                    # They are 256 batch, but oversampled from a 20 buffer.
                     x_comb = tf.concat((x_ds, x_t), axis=0)
                     y_comb = tf.concat((y_ds, y_t), axis=0)
                 else:
@@ -756,6 +737,9 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         self.styler_buffer = []
         self.label_buffer = []
         self.buffer_box = []
+        self.syn_images_buffer = {} # synthetic images stored in class
+        self.syn_images = None # all synthetic images in one tf Tensor
+        self.syn_labels = None # all labels for synthetic images in one tf Tensor
 
     def compress_add(self, ds, c, mdl, verbose=False, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
@@ -770,11 +754,20 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         num_stylers = 2
         print("Compressing class {} down to {} stylers and {} base images...".format(c, num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(ds, c, img_shape, num_stylers, num_bases, self, verbose=False)
+
         # Add compressed data to buffer
         self.base_buffer.append(b_s)
         self.styler_buffer.append(s_s)
         self.label_buffer.append(y_s)
-        self.buffer_box = []
+        
+        syn_images_c = self.compose_image(self.base_buffer, self.styler_buffer, c) # synthetic images of last class
+        if self.syn_images == None:
+            self.syn_images = syn_images_c
+            self.syn_labels = y_s
+        else:
+            self.syn_images = tf.concat([self.syn_images, syn_images_c], axis=0)
+            self.syn_labels = tf.concat([self.syn_labels, y_s], axis=0)
+        
         self.buffer_box.append(self.base_buffer)
         self.buffer_box.append(self.styler_buffer)
         self.buffer_box.append(self.label_buffer)
@@ -798,16 +791,23 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         if num_classes > 0:
             data = np.zeros((batch_size, self.base_buffer[0].shape[1], self.base_buffer[0].shape[2], self.base_buffer[0].shape[3]), dtype=np.single)
             labels = np.zeros((batch_size, self.label_buffer[0].shape[1]), dtype=np.single)
-            for i in range(batch_size):
-                # Sample class
-                cl = np.squeeze(np.random.randint(0, num_classes, 1))
-                # Sample instance
-                idx_base_image = np.squeeze(np.random.randint(0, self.base_buffer[0].shape[0]))
-                idx_styler = np.squeeze(np.random.randint(0, len(self.styler_buffer[cl])))
-                # Compose image
-                comp = self.compose_image(self.base_buffer, self.styler_buffer, cl, idx_base_image, idx_styler)
-                data[i] = comp
-                labels[i] = self.label_buffer[cl][0] # No need to sample labels, because they are all the same in one class
+            
+            indices = np.random.permutation(len(self.styler_buffer[0]) * 100) # Max number of self.syn_images
+            indices = list(indices % tf.shape(self.syn_images)[0,].numpy())[:batch_size]
+            data = tf.gather(self.syn_images, indices).numpy()
+            labels = tf.gather(self.syn_labels, indices).numpy()
+
+            # for i in range(batch_size):
+            #     # Sample class
+            #     cl = np.squeeze(np.random.randint(0, num_classes, 1))
+            #     # Sample instance
+            #     idx_base_image = np.squeeze(np.random.randint(0, self.base_buffer[0].shape[0]))
+            #     idx_styler = np.squeeze(np.random.randint(0, len(self.styler_buffer[cl])))
+            #     # Compose image
+            #     comp = self.compose_image(self.base_buffer, self.styler_buffer, cl, idx_base_image, idx_styler)
+            #     data[i] = comp
+            #     labels[i] = self.label_buffer[cl][0] # No need to sample labels, because they are all the same in one class
+
             return data, labels
         else:
             return None, None
