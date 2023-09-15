@@ -120,14 +120,18 @@ def make_grid(images, N_COLUMNS=10, PADDING=2):
 
     index = 0 
     columns = []
-    for y in range(ymaps+1):
-        if index == nmaps:
+    blank = tf.pad(tf.zeros(images.shape[1:]), paddings)
+    for y in range(ymaps + 1):
+        if index >= nmaps:
             grid = tf.concat(columns, axis=0)
             break
-        column = tf.pad(images[y * xmaps, :, :, :], paddings)
+        column = tf.pad(images[index, :, :, :], paddings)
         index += 1
         for _ in range(xmaps - 1):
-            column = tf.concat([column, tf.pad(images[y * xmaps, :, :, :], paddings)], axis=1)
+            if index >= nmaps:
+                column = tf.concat([column, blank], axis=1)
+            else:
+                column = tf.concat([column, tf.pad(images[index, :, :, :], paddings)], axis=1)
             index += 1
         columns.append(column)
 

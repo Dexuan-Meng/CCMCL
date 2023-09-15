@@ -19,7 +19,7 @@ def main(args):
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     wandb.init(sync_tensorboard=False,
-            name="structure test: K={}, T={}, I={}".format(args.K, args.T, args.I),
+            name="Lambda Study: club={}, like={}, con={}".format(args.lambda_club_content, args.lambda_likeli_content , args.lambda_contrast_content),
             project="CCMCL",
             job_type="CleanRepo",
             config=args
@@ -34,7 +34,13 @@ def main(args):
         val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
         test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
         IMG_SHAPE = (28, 28, 1)
-    elif args.dataset != 'MNIST':
+    elif args.dataset == 'CIFAR10':
+        ds = datasets.SplitCIFAR10(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
+        _, val_ds, test_ds = ds.get_all()
+        val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
+        test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
+        IMG_SHAPE = (32, 32, 3)
+    elif args.dataset not in ['MNIST', 'CIFAR10']:
         raise 'NotImplementedError'
 
     # Instantiate model and trainer
@@ -165,7 +171,7 @@ if __name__ == "__main__":
                         help='how many times the experiment is repeated')
     parser.add_argument('--TASKS', type=int, default=5,
                         help='number of groups in which all classes are divided')
-    parser.add_argument('-BUFFER_SIZE', type=int, default=100,
+    parser.add_argument('--BUFFER_SIZE', type=int, default=100,
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')

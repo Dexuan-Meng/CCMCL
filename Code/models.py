@@ -9,7 +9,7 @@ import abc
 import numpy as np
 import wandb
 from tqdm import tqdm
-    
+
     
 class CNN(tf.keras.Model):
     """
@@ -532,13 +532,13 @@ class CompositionalBalancedBuffer(object):
         # Randomly select and return k examples with their labels from the buffer
         num_classes = len(self.w_buffer)
         if num_classes > 0:
-            data = np.zeros((k, self.c_buffer[0].shape[1], self.c_buffer[0].shape[2], self.c_buffer[0].shape[3]), dtype=np.single)
-            labels = np.zeros((k, self.y_buffer[0].shape[1]), dtype=np.single)
+            data = np.zeros((k, tf.shape(self.c_buffer[0])[1], tf.shape(self.c_buffer[0])[2], tf.shape(self.c_buffer[0])[3]), dtype=np.single)
+            labels = np.zeros((k, tf.shape(self.y_buffer[0])[1]), dtype=np.single)
             for i in range(k):
                 # Sample class
                 cl = np.squeeze(np.random.randint(0, num_classes, 1))
                 # Sample instance
-                idx = np.squeeze(np.random.randint(0, self.w_buffer[cl].shape[0]))
+                idx = np.squeeze(np.random.randint(0, tf.shape(self.w_buffer[cl])[0]))
                 # Compose image
                 comp = self.compose_image(self.c_buffer, self.w_buffer, cl, idx)
                 # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
@@ -553,7 +553,7 @@ class CompositionalBalancedBuffer(object):
         print("| Summary                              |")
         print("+======================================+")
         for i in range(len(self.w_buffer)):
-            print("| Class {}: {} Instances {} components".format(i, self.w_buffer[i].shape[0], self.w_buffer[i].shape[1]))
+            print("| Class {}: {} Instances {} components".format(i, tf.shape(self.w_buffer[i])[0], tf.shape(self.w_buffer[i])[1]))
         print("+--------------------------------------+")
 
 
@@ -633,8 +633,8 @@ class FactorizationCompressor(DataCompressor):
         self.styler_opt.apply_gradients(zip(dist_grad_w_s, stylers_trainable_variables))
         self.dist_opt.apply_gradients(zip(dist_grad_c_s, [self.base_image]))
 
-        return dist_loss
-    
+        return dist_loss, club_content_loss, loss
+
     @tf.function
     def update_extractor(self, x, y):
         # compute contrastive loss and update extractor
@@ -646,12 +646,12 @@ class FactorizationCompressor(DataCompressor):
 
             twin_image = self.get_twin_image()
             embed_c, _ = self.extractor(twin_image)
-            likeli_content_loss = tf.reduce_mean(((1. - self.cosine_similarity(embed_c[:self.base_image.shape[0]], embed_c[self.base_image.shape[0]:])) / 2.))
-            embed_c_0, _ = tf.linalg.normalize(embed_c[:self.base_image.shape[0]])
-            embed_c_1, _ = tf.linalg.normalize(embed_c[self.base_image.shape[0]:])
+            likeli_content_loss = tf.reduce_mean(((1. - self.cosine_similarity(embed_c[:tf.shape(self.base_image)[0]], embed_c[tf.shape(self.base_image)[0]:])) / 2.))
+            embed_c_0, _ = tf.linalg.normalize(embed_c[:tf.shape(self.base_image)[0]])
+            embed_c_1, _ = tf.linalg.normalize(embed_c[tf.shape(self.base_image)[0]:])
             contrast_content_loss = self.contrastive_loss(
                 tf.stack([embed_c_0, embed_c_1], axis=1), 
-                tf.argmax(self.syn_label, axis=1)[:self.base_image.shape[0]]
+                tf.argmax(self.syn_label, axis=1)[:tf.shape(self.base_image)[0]]
                 )
             
             sim_content_loss = sim_content_loss + cls_content_loss * self.lambda_cls_content \
@@ -660,6 +660,8 @@ class FactorizationCompressor(DataCompressor):
 
         dist_grad_extractor = tape_extractor.gradient(sim_content_loss, self.extractor.trainable_variables)
         self.extractor_opt.apply_gradients(zip(dist_grad_extractor, self.extractor.trainable_variables))
+        
+        return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
 
     @staticmethod
     def compose_image(base_image, stylers):
@@ -678,12 +680,12 @@ class FactorizationCompressor(DataCompressor):
         twin_image = tf.concat((self.stylers[indices[0]](self.base_image), self.stylers[indices[1]](self.base_image)), axis=0)
         return twin_image
     
-    def compress(self, ds, c, img_shape, num_stylers, k, buf=None, verbose=False):
+    def compress(self, ds, c, img_shape, num_stylers, num_base, buf=None, verbose=False):
 
         # Create and initialize synthetic data
         # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
-        self.base_image = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
-        self.syn_label = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_stylers * k,), dtype=tf.int32), 10), dtype=tf.float32)
+        self.base_image = tf.Variable(tf.random.uniform((num_base, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
+        self.syn_label = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_stylers * num_base,), dtype=tf.int32), 10), dtype=tf.float32)
         for _ in range(num_stylers):
             styler = StyleTranslator(in_channel=img_shape[2], mid_channel=3, out_channel=img_shape[2], image_size=img_shape, kernel_size=3)
             styler.build((None, img_shape[0], img_shape[1], img_shape[2]))
@@ -703,11 +705,18 @@ class FactorizationCompressor(DataCompressor):
                 x_ds, y_ds = next(ds_iter)
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss = self.distill_step(x_ds, y_ds)
+                    dist_loss, club_content_loss, loss = self.distill_step(x_ds, y_ds)
+                    wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
+                            "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
+                            "Distill/class {}/Grand_loss".format(self.class_label): loss})
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                    self.update_extractor(x_ds, y_ds)
+                    cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
+                    wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
+                               "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
+                               "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
+                               "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
+                    
                     distill_step += 1
-
                 # Perform innerloop training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
@@ -716,7 +725,9 @@ class FactorizationCompressor(DataCompressor):
                 else:
                     x_comb = x_ds # Compress at first, then train with real data or real+syn data.
                     y_comb = y_ds # batch size of real data and synthetic data are both 256
-                for _ in range(c):
+                
+                innerloop = 1 if c==0 else c
+                for _ in range(innerloop):
                     train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
                 loss_name = 'InnerLoop/Class ' + str(c)
                 wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
@@ -735,7 +746,7 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         self.base_buffer = []
         self.styler_buffer = []
         self.label_buffer = []
-        self.buffer_box = []
+        self.buffer_box = {}
         self.syn_images_buffer = {} # synthetic images stored in class
         self.syn_images = None # all synthetic images in one tf Tensor
         self.syn_labels = None # all labels for synthetic images in one tf Tensor
@@ -767,9 +778,9 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
             self.syn_images = tf.concat([self.syn_images, syn_images_c], axis=0)
             self.syn_labels = tf.concat([self.syn_labels, y_s], axis=0)
         
-        self.buffer_box.append(self.base_buffer)
-        self.buffer_box.append(self.styler_buffer)
-        self.buffer_box.append(self.label_buffer)
+        self.buffer_box[0] = self.base_buffer
+        self.buffer_box[1] = self.styler_buffer
+        self.buffer_box[2] = self.label_buffer
 
     @staticmethod
     def compose_image(base_buffer, styler_buffer, cl, idx_base_image=None, idx_styler=None):
@@ -788,17 +799,18 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         # Randomly select and return k examples with their labels from the buffer
         num_classes = len(self.base_buffer)
         if num_classes > 0:
-            data = np.zeros((batch_size, self.base_buffer[0].shape[1], self.base_buffer[0].shape[2], self.base_buffer[0].shape[3]), dtype=np.single)
-            labels = np.zeros((batch_size, self.label_buffer[0].shape[1]), dtype=np.single)
+            data = np.zeros((batch_size, tf.shape(self.base_buffer[0])[1], tf.shape(self.base_buffer[0])[2], tf.shape(self.base_buffer[0])[3]), dtype=np.single)
+            labels = np.zeros((batch_size, tf.shape(self.label_buffer[0])[1]), dtype=np.single)
             
-            indices = np.random.permutation(len(self.styler_buffer[0]) * 100) # Max number of self.syn_images
-            indices = list(indices % tf.shape(self.syn_images)[0,].numpy())[:batch_size]
+            indices = np.random.permutation(len(self.styler_buffer[0]) * tf.shape(self.base_buffer[0])[0].numpy() * 10) # Max number of self.syn_images
+            indices = list(indices[:batch_size] % tf.shape(self.syn_images)[0,].numpy())
             data = tf.gather(self.syn_images, indices).numpy()
             labels = tf.gather(self.syn_labels, indices).numpy()
 
             return data, labels
         else:
             return None, None
+
     def summary(self):
         print("+======================================+")
         print("| Summary                              |")
@@ -806,7 +818,7 @@ class FactorizationBalancedBuffer(CompositionalBalancedBuffer):
         for i in range(len(self.styler_buffer)):
             print("| Class {}: {} stylers {} components".format(i, 
                                                                   len(self.styler_buffer[i]), 
-                                                                  self.base_buffer[i].shape[0]
+                                                                  tf.shape(self.base_buffer[i])[0]
                                                                   )
                 )
         print("+--------------------------------------+")
@@ -828,6 +840,7 @@ class StyleTranslator(tf.keras.Model):
         self.scale = None
         self.shift = None
         self.dec = None
+        # self.norm = None
 
     def build(self, input_shape):
         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
@@ -844,12 +857,14 @@ class StyleTranslator(tf.keras.Model):
             trainable=True
             )
         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
+        # self.norm = tf.keras.layers.Normalization(axis=None, mean=0.5, variance=0.0625)
         super(StyleTranslator, self).build(input_shape)
         
     def call(self, inputs, training=None):
         output = self.enc(inputs)
         output = self.scale * output + self.shift
         output = self.dec(output)
+        # output = self.norm(output)
         return output
     
     def model(self):
