@@ -19,7 +19,7 @@ def main(args):
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     wandb.init(sync_tensorboard=False,
-            name="Lambda Study: club={}, like={}, con={}".format(args.lambda_club_content, args.lambda_likeli_content , args.lambda_contrast_content),
+            name="DualClasses Study: {}".format(args.dataset),
             project="CCMCL",
             job_type="CleanRepo",
             config=args
@@ -50,7 +50,10 @@ def main(args):
     if args.plugin == 'Compositional':
         buf = models.CompositionalBalancedBuffer()
     elif args.plugin == 'Factorization':
-        buf = models.FactorizationBalancedBuffer()
+        if args.DUAL_CLASSES:
+            buf = models.DualClassesFactorizationBuffer()
+        else:
+            buf = models.FactorizationBalancedBuffer() 
 
     train = utils.Trainer()
 
@@ -62,6 +65,7 @@ def main(args):
     wandb.log({"Validation/Val_acc": 0, "Validation/Task": 0})
 
     condensation_args = {
+        'num_stylers': args.num_stylers,
         'batch_size': args.BATCH_SIZE,
         'train_learning_rate': args.LEARNING_RATE,
         'img_learning_rate': args.DIST_LEARNING_RATE,
@@ -88,12 +92,24 @@ def main(args):
         # Distill
         print("Distilling classes {}..".format(classes))
         # Compress and store
-        for c in classes:
-            # Load data set
-            train_ds, _, _ = ds.get_split(c)
-            train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
-            buf.compress_add(train_ds, c, model, **condensation_args)
-        buf.summary()
+
+        if args.DUAL_CLASSES:
+            dual_train_datasets = {}
+            for c in classes:
+                # Load training data set
+                train_ds, _, _ = ds.get_split(c)
+                dual_train_datasets[c] = train_ds.cache().repeat().shuffle(10000).batch(args.BATCH_SIZE).map(utils.standardize)
+            buf.compress_add(dual_train_datasets, classes, model, **condensation_args)
+            buf.summary()
+        else:
+            for c in classes:
+                # Load training data set
+                train_ds, _, _ = ds.get_split(c)
+                buf.compress_add(train_ds, c, model, **condensation_args)
+            buf.summary()
+
+        # buf.compress_add(train_ds, classes, model, **condensation_args)
+        # buf.summary()
 
         for cl in classes:
             grid = make_grid(buf.buffer_box[0][cl])
@@ -155,7 +171,6 @@ def main(args):
     wandb.log({'Test/Loss': test_loss,
                'Test/Accuracy': test_acc})
 
-
     final_time_cost = time.time() - start_time
     wandb.log({"Final Time Cost": final_time_cost})
 
@@ -165,6 +180,9 @@ if __name__ == "__main__":
     utils.enable_gpu_mem_growth()
 
     parser = argparse.ArgumentParser()
+    
+    parser.add_argument('--DUAL_CLASSES', type=bool, default=True,
+                        help='whether compressing data of two classes at a time')
     parser.add_argument('--dataset', type=str, default='MNIST',
                         choices=['MNIST', 'CIFAR10', 'FashionMNIST', 'SVHN'])
     parser.add_argument('--RUNS', type=int, default=1,
@@ -173,6 +191,7 @@ if __name__ == "__main__":
                         help='number of groups in which all classes are divided')
     parser.add_argument('--BUFFER_SIZE', type=int, default=100,
                         help='total memory size')
+    parser.add_argument('--num_stylers', type=int, default=2)
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
     parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
@@ -183,15 +202,15 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=200,
+    parser.add_argument('--ITERS', type=int, default=500,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=200,
+    parser.add_argument('--VAL_ITERS', type=int, default=500,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=100,
                         help='Batchsize for validation')
     
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--K', type=int, default=10, 
+    parser.add_argument('--K', type=int, default=100, 
                         help='number of distillation iterations')
     parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
