@@ -890,11 +890,16 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
             twin_image = self.get_twin_image()
             embed_c, _ = self.extractor(twin_image)
             likeli_content_loss = tf.reduce_mean(((1. - self.cosine_similarity(embed_c[:tf.shape(self.base_image)[0]], embed_c[tf.shape(self.base_image)[0]:])) / 2.))
-            embed_c_0, _ = tf.linalg.normalize(embed_c[:tf.shape(self.base_image)[0]])
-            embed_c_1, _ = tf.linalg.normalize(embed_c[tf.shape(self.base_image)[0]:])
+            embed_c_0, _ = tf.linalg.normalize(embed_c[:tf.shape(self.base_image)[0]], axis=1)
+            embed_c_1, _ = tf.linalg.normalize(embed_c[tf.shape(self.base_image)[0]:], axis=1)
+            feature_label = tf.concat(
+                [self.syn_label[0:self.num_base], self.syn_label[tf.shape(self.base_image)[0]:tf.shape(self.base_image)[0] + self.num_base]],
+                axis=0
+            )
+            seed = np.random.randint(1000)
             contrast_content_loss = self.contrastive_loss(
-                tf.stack([embed_c_0, embed_c_1], axis=1), 
-                tf.argmax(self.syn_label, axis=1)[:tf.shape(self.base_image)[0]]
+                tf.stack([tf.random.shuffle(embed_c_0, seed=seed), tf.random.shuffle(embed_c_1, seed=seed)], axis=1), 
+                tf.random.shuffle(tf.argmax(feature_label, axis=1), seed=seed)
                 )
             
             sim_content_loss = sim_content_loss + cls_content_loss * self.lambda_cls_content \

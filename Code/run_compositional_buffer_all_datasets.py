@@ -19,7 +19,7 @@ def main(args):
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     wandb.init(sync_tensorboard=False,
-            name="DualClasses Study: {}".format(args.dataset),
+            name="COntrast loss check: {}".format(args.dataset),
             project="CCMCL",
             job_type="CleanRepo",
             config=args
@@ -210,7 +210,7 @@ if __name__ == "__main__":
                         help='Batchsize for validation')
     
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--K', type=int, default=100, 
+    parser.add_argument('--K', type=int, default=10, 
                         help='number of distillation iterations')
     parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
@@ -218,7 +218,7 @@ if __name__ == "__main__":
                         help='number of image update within one outerloop')
     
     parser.add_argument('--lambda_club_content', type=float, default=10)
-    parser.add_argument('--lambda_likeli_content', type=float, default= 1)
+    parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
     parser.add_argument('--lambda_contrast_content', type=float, default=1)
 
