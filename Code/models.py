@@ -4,6 +4,7 @@ This file contains models.
 
 import tensorflow as tf
 import tensorflow_addons as tfa
+import keras
 import utils
 import abc
 import numpy as np
@@ -992,6 +993,10 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
 
     def __init__(self):
         super(DualClassesFactorizationBuffer, self).__init__()
+        self.image_params_count_exp = 0
+        self.styler_params_count_exp = 0
+        self.image_params_count = 0
+        self.styler_params_count = 0
 
     def compress_add(self, ds, c, mdl, verbose=False, num_stylers=2, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
@@ -1007,6 +1012,10 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.num_stylers = num_stylers
         print("Compressing class {} down to {} stylers and 2 * {} base images...".format(c, self.num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, verbose=False)
+
+        self.get_storage(b_s, s_s)
+        wandb.log({'image_params_count': self.image_params_count,
+                   'styler_params_count': self.styler_params_count})
 
         # Add compressed data to buffer
         for i in range(len(c)):
@@ -1043,6 +1052,13 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
             else:
                 comp = styler_buffer[cl][idx_styler](tf.expand_dims(base_buffer[cl][idx_base_image], axis=0))
         return comp
+    
+    def get_storage(self, b_s, s_s):
+        self.image_params_count_exp = keras.backend.count_params(b_s)
+        for styler in s_s:
+            self.styler_params_count_exp += keras.utils.layer_utils.count_params(styler.trainable_weights)
+        self.image_params_count += self.image_params_count_exp
+        self.styler_params_count += self.styler_params_count_exp
 
 
 class StyleTranslator(tf.keras.Model):
@@ -1065,25 +1081,27 @@ class StyleTranslator(tf.keras.Model):
 
     def build(self, input_shape):
         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-        self.scale = tf.Variable(
-            tf.ones((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
-                     dtype=tf.dtypes.float32
-                     ),
-            trainable=True
-            )
-        self.shift = tf.Variable(
-            tf.zeros((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
-                     dtype=tf.dtypes.float32
-                     ),
-            trainable=True
-            )
+        # self.scale = tf.Variable(
+        #     tf.ones((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
+        #              dtype=tf.dtypes.float32
+        #              ),
+        #     trainable=True
+        #     )
+        # self.shift = tf.Variable(
+        #     tf.zeros((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
+        #              dtype=tf.dtypes.float32
+        #              ),
+        #     trainable=True
+        #     )
+        self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
         # self.norm = tf.keras.layers.Normalization(axis=None, mean=0.5, variance=0.0625)
         super(StyleTranslator, self).build(input_shape)
         
     def call(self, inputs, training=None):
         output = self.enc(inputs)
-        output = self.scale * output + self.shift
+        # output = self.scale * output + self.shift
+        output = self.transform(output)
         output = self.dec(output)
         # output = self.norm(output)
         return output
@@ -1158,3 +1176,24 @@ class Extractor(tf.keras.Model):
     def model(self):
         x = tf.keras.Input(shape=(28, 28, 1))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+
+class TransformLayer(tf.keras.layers.Layer):
+    def __init__(self, img_size, kernel_size, mid_channel):
+        super().__init__()
+        # self.scale = tf.Variable(1.)
+        self.scale = tf.Variable(
+            tf.ones((1, img_size[0] - kernel_size + 1, img_size[1] - kernel_size + 1, mid_channel), 
+                     dtype=tf.dtypes.float32
+                     ),
+            trainable=True
+            )
+        self.shift = tf.Variable(
+            tf.zeros((1, img_size[0] - kernel_size + 1,  img_size[1] - kernel_size + 1, mid_channel), 
+                     dtype=tf.dtypes.float32
+                     ),
+            trainable=True
+            )
+
+    def call(self, inputs):
+        return inputs * self.scale + self.shift
