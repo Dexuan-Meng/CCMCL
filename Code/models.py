@@ -193,89 +193,6 @@ class DataCompressor(object):
         return x_s, y_s
 
 
-class CompositionalCompressor(DataCompressor):
-    """
-    Compresses data into a smaller set of synthetic examples.
-    """
-
-    def __init__(self, batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=10):
-        super(CompositionalCompressor, self).__init__(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I)
-
-    @tf.function
-    def distill_step(self, x, y, c_s, w_s, y_s):
-        # Minimize cosine similarity between gradients
-        with tf.GradientTape() as inner_tape:
-            logits_x = self.mdl(x, training=False)
-            loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
-        grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
-        with tf.GradientTape() as tape:
-            # Make prediction using model
-            with tf.GradientTape() as inner_tape:
-                # comp = tf.nn.relu(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
-                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
-                logits_s = self.mdl(comp, training=False)
-                loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
-            grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
-            # Compute cosine similarity
-            dist_loss = tf.constant(0.0, dtype=tf.float32)
-            for g, gs in zip(grads, grads_s):
-                if len(g.shape) == 2:
-                    g_norm = tf.math.l2_normalize(g, axis=0)
-                    gs_norm = tf.math.l2_normalize(gs, axis=0)
-                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
-                if len(g.shape) == 4:
-                    g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
-                    gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
-                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
-                dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
-        dist_grads = tape.gradient(dist_loss, [c_s, w_s])
-        self.dist_opt.apply_gradients(zip(dist_grads, [c_s, w_s]))
-        return dist_loss
-
-    def compress(self, ds, c, img_shape, num_synth, k, buf=None, verbose=False):
-        # Create and initialize synthetic data
-        # num_synth = num_weight = 2 * int(BUFFER_SIZE / len(CLASSES)) = 20
-        # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
-        c_s = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
-        y_s = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_synth,), dtype=tf.int32), 10), dtype=tf.float32)
-        w_s = tf.Variable(tf.random.normal((num_synth, k, 1, 1, 1), dtype=tf.float32))
-
-        # Preparation for log
-        starting_step = self.K * self.T * self.I * c
-        distill_step = 0
-        update_step = 0
-
-        # Compress
-        ds_iter = ds.as_numpy_iterator()
-        for k in tqdm(range(self.K)):
-            # Reinitialize model
-            utils.reinitialize_model(self.mdl)
-            for t in range(self.T):
-                x_ds, y_ds = next(ds_iter)
-                # Perform distillation step
-                for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
-                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                    distill_step += 1
-                # Perform training step
-                x_t, y_t = buf.sample(self.batch_size)
-                if x_t is not None:
-                    x_comb = tf.concat((x_ds, x_t), axis=0)
-                    y_comb = tf.concat((y_ds, y_t), axis=0)
-                else:
-                    x_comb = x_ds # Compress at first, then train with real data or real+syn data.
-                    y_comb = y_ds # batch size of real data and synthetic data are both 256
-                train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
-                loss_name = 'InnerLoop/Class ' + str(c)
-                wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
-                update_step += 1
-                # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
-                # Training is still necessary for the verbose.
-            if verbose:
-                print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
-        return c_s, w_s, y_s
-
-
 class AbstractBuffer(abc.ABC):
     """
     Abstract base class for buffers
@@ -492,6 +409,97 @@ class CompressedBalancedBuffer(BalancedBuffer):
             self.y_buffer = y_c.numpy()
 
 
+class CompositionalCompressor(DataCompressor):
+    """
+    Compresses data into a smaller set of synthetic examples.
+    """
+
+    def __init__(self, batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=10):
+        super(CompositionalCompressor, self).__init__(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I)
+
+    @tf.function
+    def distill_step(self, x, y, c_s, w_s, y_s):
+        # Minimize cosine similarity between gradients
+        with tf.GradientTape() as inner_tape:
+            logits_x = self.mdl(x, training=False)
+            loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
+        grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
+        with tf.GradientTape() as tape:
+            # Make prediction using model
+            with tf.GradientTape() as inner_tape:
+                # comp = tf.nn.relu(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                logits_s = self.mdl(comp, training=False)
+                loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
+            grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
+            # Compute cosine similarity
+            dist_loss = tf.constant(0.0, dtype=tf.float32)
+            for g, gs in zip(grads, grads_s):
+                if len(g.shape) == 2:
+                    g_norm = tf.math.l2_normalize(g, axis=0)
+                    gs_norm = tf.math.l2_normalize(gs, axis=0)
+                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
+                if len(g.shape) == 4:
+                    g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
+                    gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
+                    inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
+                dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
+        dist_grads = tape.gradient(dist_loss, [c_s, w_s])
+        self.dist_opt.apply_gradients(zip(dist_grads, [c_s, w_s]))
+        return dist_loss
+
+    def compress(self, ds, c, img_shape, num_synth, k, buf=None, log_histogram=False, verbose=False):
+        # Create and initialize synthetic data
+        # num_synth = num_weight = 2 * int(BUFFER_SIZE / len(CLASSES)) = 20
+        # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
+        c_s = tf.Variable(tf.random.uniform((k, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
+        y_s = tf.Variable(tf.one_hot(tf.constant(c, shape=(num_synth,), dtype=tf.int32), 10), dtype=tf.float32)
+        w_s = tf.Variable(tf.random.normal((num_synth, k, 1, 1, 1), dtype=tf.float32))
+
+        # Preparation for log
+        starting_step = self.K * self.T * self.I * c
+        distill_step = 0
+        update_step = 0
+
+        # Compress
+        ds_iter = ds.as_numpy_iterator()
+        for k in tqdm(range(self.K)):
+            # Reinitialize model
+            utils.reinitialize_model(self.mdl)
+            for t in range(self.T):
+                # y_ds = next(ds_iter)
+                x_ds, y_ds = next(ds_iter)
+
+                # Perform distillation step
+                for i in range(self.I): # one batch of dataset distills the components I iterations
+                    dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
+                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                    if log_histogram:
+                        wandb.log({
+                            "Distill/class {}/Synthetic_Pixels".format(c):
+                            wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
+                            "Distill/class {}/Base_Pixels".format(c): wandb.Histogram(c_s, num_bins=512)
+                            })
+                    distill_step += 1
+                # Perform training step
+                x_t, y_t = buf.sample(self.batch_size)
+                if x_t is not None:
+                    x_comb = tf.concat((x_ds, x_t), axis=0)
+                    y_comb = tf.concat((y_ds, y_t), axis=0)
+                else:
+                    x_comb = x_ds # Compress at first, then train with real data or real+syn data.
+                    y_comb = y_ds # batch size of real data and synthetic data are both 256
+                train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                loss_name = 'InnerLoop/Class ' + str(c)
+                wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
+                update_step += 1
+                # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
+                # Training is still necessary for the verbose.
+            if verbose:
+                print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
+        return c_s, w_s, y_s
+
+
 class CompositionalBalancedBuffer(object):
     """
     Buffer that adds a compression to the balanced buffer
@@ -501,28 +509,43 @@ class CompositionalBalancedBuffer(object):
         self.c_buffer = []
         self.w_buffer = []
         self.y_buffer = []
-        self.buffer_box = []
+        self.buffer_box = {}
+        
+        self.image_params_count_exp = 0
+        self.weight_params_count_exp = 0
+        self.image_params_count = 0
+        self.weight_params_count = 0
+
         super(CompositionalBalancedBuffer, self).__init__()
 
-    def compress_add(self, ds, c, batch_size, train_learning_rate, dist_learning_rate, img_shape, num_synth, K, T, I, mdl, verbose=False):
+    def compress_add(self, ds, c, mdl, batch_size=128, train_learning_rate=0.01, dist_learning_rate=0.05, 
+                     img_shape=(28, 28, 1), num_synth=10, K=20, T=10, I=10, log_histogram=False, verbose=False):
         # Create compressor
         comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=I)
         # Compress data
         num_weights = int(2*num_synth)
         num_components = int(num_synth)
         print("Compressing class {} down to {} weights and {} components...".format(c, num_weights, num_components))
-        c_s, w_s, y_s = comp.compress(ds, c, img_shape, num_weights, num_components, self, verbose=False)
+        c_s, w_s, y_s = comp.compress(ds, c, img_shape, num_weights, num_components, self, log_histogram=log_histogram, 
+                                      verbose=False)
+        
+        self.get_storage(c_s, w_s)
+        wandb.log({'image_params_count': self.image_params_count,
+                   'weight_params_count': self.weight_params_count,
+                   'Total_params_count': self.weight_params_count + self.image_params_count})
+        
         # Add compressed data to buffer
         self.c_buffer.append(c_s)
         self.w_buffer.append(w_s)
         self.y_buffer.append(y_s)
         
+        # buffer_box is build for grid making and logging images
         self.buffer_box[0] = self.c_buffer
         self.buffer_box[1] = self.w_buffer
         self.buffer_box[2] = self.y_buffer
 
     @staticmethod
-    def compose_image(c_buffer, w_buffer, cl, idx):
+    def compose_image(c_buffer, w_buffer, cl, idx=None):
         if idx is None:
             comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
         else:
@@ -548,6 +571,12 @@ class CompositionalBalancedBuffer(object):
             return data, labels
         else:
             return None, None
+
+    def get_storage(self, c_s, w_s):
+        self.image_params_count_exp = keras.backend.count_params(c_s)
+        self.weight_params_count_exp = keras.backend.count_params(w_s)
+        self.image_params_count += self.image_params_count_exp
+        self.weight_params_count += self.weight_params_count_exp
 
     def summary(self):
         print("+======================================+")
@@ -1015,7 +1044,8 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
 
         self.get_storage(b_s, s_s)
         wandb.log({'image_params_count': self.image_params_count,
-                   'styler_params_count': self.styler_params_count})
+                   'styler_params_count': self.styler_params_count,
+                   'Total_params_count': self.styler_params_count + self.image_params_count})
 
         # Add compressed data to buffer
         for i in range(len(c)):
@@ -1081,18 +1111,6 @@ class StyleTranslator(tf.keras.Model):
 
     def build(self, input_shape):
         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-        # self.scale = tf.Variable(
-        #     tf.ones((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
-        #              dtype=tf.dtypes.float32
-        #              ),
-        #     trainable=True
-        #     )
-        # self.shift = tf.Variable(
-        #     tf.zeros((1, self.img_size[0]-self.kernel_size+1, self.img_size[1]-self.kernel_size+1, self.mid_channel), 
-        #              dtype=tf.dtypes.float32
-        #              ),
-        #     trainable=True
-        #     )
         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
         # self.norm = tf.keras.layers.Normalization(axis=None, mean=0.5, variance=0.0625)
@@ -1100,7 +1118,6 @@ class StyleTranslator(tf.keras.Model):
         
     def call(self, inputs, training=None):
         output = self.enc(inputs)
-        # output = self.scale * output + self.shift
         output = self.transform(output)
         output = self.dec(output)
         # output = self.norm(output)

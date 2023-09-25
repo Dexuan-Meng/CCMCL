@@ -42,7 +42,7 @@ def main(args):
     for run in range(args.RUNS):
 
         wandb.init(sync_tensorboard=False,
-                name="Parameter Study: {} ".format(args.dataset) + ID, 
+                name="Compositional Test: {} ".format(args.dataset) + ID, 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -55,11 +55,41 @@ def main(args):
         # print(model.summary())
         if args.plugin == 'Compositional':
             buf = models.CompositionalBalancedBuffer()
+            condensation_args = {
+                'batch_size': args.BATCH_SIZE,
+                'train_learning_rate': args.LEARNING_RATE,
+                'dist_learning_rate': args.DIST_LEARNING_RATE,
+                'img_shape': IMG_SHAPE,
+                'num_synth': int(args.BUFFER_SIZE / len(CLASSES)),
+                'K': args.K,
+                'T': args.T,
+                'I': args.I,
+                'log_histogram': args.log_histogram
+            }
         elif args.plugin == 'Factorization':
             if args.DUAL_CLASSES:
                 buf = models.DualClassesFactorizationBuffer()
             else:
-                buf = models.FactorizationBalancedBuffer() 
+                buf = models.FactorizationBalancedBuffer()
+            
+            condensation_args = {
+                'num_stylers': args.num_stylers,
+                'batch_size': args.BATCH_SIZE,
+                'train_learning_rate': args.LEARNING_RATE,
+                'img_learning_rate': args.DIST_LEARNING_RATE,
+                'styler_learning_rate': args.styler_lr,
+                'img_shape': IMG_SHAPE,
+                'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
+                'K': args.K,
+                'T': args.T,
+                'I': args.I,
+                'IN': args.IN,
+                'lambda_club_content': args.lambda_club_content,
+                'lambda_likeli_content': args.lambda_likeli_content,
+                'lambda_cls_content': args.lambda_cls_content,
+                'lambda_contrast_content': args.lambda_contrast_content,
+                'log_histogram': args.log_histogram
+            }
 
         train = utils.Trainer()
 
@@ -70,24 +100,6 @@ def main(args):
         
         wandb.log({"Validation/Val_acc": 0, "Validation/Task": 0})
 
-        condensation_args = {
-            'num_stylers': args.num_stylers,
-            'batch_size': args.BATCH_SIZE,
-            'train_learning_rate': args.LEARNING_RATE,
-            'img_learning_rate': args.DIST_LEARNING_RATE,
-            'styler_learning_rate': args.styler_lr,
-            'img_shape': IMG_SHAPE,
-            'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
-            'K': args.K,
-            'T': args.T,
-            'I': args.I,
-            'IN': args.IN,
-            'lambda_club_content': args.lambda_club_content,
-            'lambda_likeli_content': args.lambda_likeli_content,
-            'lambda_cls_content': args.lambda_cls_content,
-            'lambda_contrast_content': args.lambda_contrast_content,
-            'log_histogram': args.log_histogram
-        }
 
         for t in range(args.TASKS):
 
@@ -113,6 +125,7 @@ def main(args):
                 for c in classes:
                     # Load training data set
                     train_ds, _, _ = ds.get_split(c)
+                    train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.BATCH_SIZE).map(utils.standardize)
                     buf.compress_add(train_ds, c, model, **condensation_args)
                 buf.summary()
 
@@ -215,17 +228,17 @@ if __name__ == "__main__":
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=100,
                         help='Batchsize for validation')
-    parser.add_argument('--log_histogram', type=bool, default=False,
+    parser.add_argument('--log_histogram', type=bool, default=True,
                         help='whether to log histogram to wandb')
     
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=1,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
@@ -240,7 +253,7 @@ if __name__ == "__main__":
     parser.add_argument('--group', type=int, default=0)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
-                        choices=['Compositional', 'Compressed', 'Factorization', 'DualClasses'],
+                        choices=['Compositional', 'Compressed', 'Factorization'],
                         help='method for condensation')
 
     args = parser.parse_args()
