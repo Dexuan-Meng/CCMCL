@@ -42,7 +42,7 @@ def main(args):
     for run in range(args.RUNS):
 
         wandb.init(sync_tensorboard=False,
-                name="Compositional Test: {} ".format(args.dataset) + ID, 
+                name="Learning rate: {} ".format(args.dataset) + ID, 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -129,9 +129,6 @@ def main(args):
                     buf.compress_add(train_ds, c, model, **condensation_args)
                 buf.summary()
 
-            # buf.compress_add(train_ds, classes, model, **condensation_args)
-            # buf.summary()
-
             for cl in classes:
                 grid = make_grid(buf.buffer_box[0][cl])
                 wandb.log({'BaseImages/class_{}'.format(cl): wandb.Image(grid)})
@@ -214,7 +211,7 @@ if __name__ == "__main__":
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
@@ -228,9 +225,9 @@ if __name__ == "__main__":
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=100,
                         help='Batchsize for validation')
-    parser.add_argument('--log_histogram', type=bool, default=True,
+    parser.add_argument('--log_histogram', type=bool, default=False,
                         help='whether to log histogram to wandb')
-    
+
     # Hyperparameters to be heavily tuned
     parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
@@ -250,7 +247,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=0)
+    parser.add_argument('--group', type=int, default=2)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization'],

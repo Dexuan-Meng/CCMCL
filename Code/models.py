@@ -1107,25 +1107,64 @@ class StyleTranslator(tf.keras.Model):
         self.scale = None
         self.shift = None
         self.dec = None
-        # self.norm = None
+        self.norm_0 = None
+        self.norm_1 = None
 
     def build(self, input_shape):
+        self.norm_0 = tfa.layers.InstanceNormalization()
+        self.norm_1 = tfa.layers.InstanceNormalization()
         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
-        # self.norm = tf.keras.layers.Normalization(axis=None, mean=0.5, variance=0.0625)
         super(StyleTranslator, self).build(input_shape)
         
     def call(self, inputs, training=None):
-        output = self.enc(inputs)
+        output = self.norm_0(inputs)
+        output = self.enc(output)
         output = self.transform(output)
         output = self.dec(output)
-        # output = self.norm(output)
+        output = self.norm_1(output)
+        output = tf.keras.activations.sigmoid(output)
         return output
     
     def model(self):
         x = tf.keras.Input(shape=(28, 28, 1))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+
+# class StyleTranslator(tf.keras.Model):
+#     """
+#     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
+#     """
+
+#     def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
+#         super(StyleTranslator, self).__init__()
+#         self.in_channel = in_channel
+#         self.mid_channel = mid_channel
+#         self.out_channel = out_channel
+#         self.img_size = image_size
+#         self.kernel_size = kernel_size
+#         self.enc = None
+#         self.scale = None
+#         self.shift = None
+#         self.dec = None
+#         # self.norm = None
+
+#     def build(self, input_shape):
+#         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
+#         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
+#         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
+#         super(StyleTranslator, self).build(input_shape)
+        
+#     def call(self, inputs, training=None):
+#         output = self.enc(inputs)
+#         output = self.transform(output)
+#         output = self.dec(output)
+#         return output
+    
+#     def model(self):
+#         x = tf.keras.Input(shape=(28, 28, 1))
+#         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class Extractor(tf.keras.Model):
