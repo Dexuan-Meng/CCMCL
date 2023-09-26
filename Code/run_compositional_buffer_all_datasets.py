@@ -17,18 +17,27 @@ from utils import make_grid
 def main(args):
     
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    task_classes = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]]
+    val_acc_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
+    val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
     # Load data set
     if args.dataset == 'MNIST':
         ds = datasets.SplitMNIST(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
         _, val_ds, test_ds = ds.get_all()
-        val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
+        val_ds_splitted = []
+        for classes in task_classes:
+            val_ds_splitted.append(val_ds.get_split(classes).cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
         test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
         IMG_SHAPE = (28, 28, 1)
     elif args.dataset == 'CIFAR10':
         ds = datasets.SplitCIFAR10(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
-        _, val_ds, test_ds = ds.get_all()
-        val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
+        _, _, test_ds = ds.get_all()
+        val_ds_splitted = []
+        for classes in task_classes:
+            _, val_ds, _ = ds.get_split(classes)
+            val_ds_splitted.append(val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
+        # val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
         test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
         IMG_SHAPE = (32, 32, 3)
     elif args.dataset not in ['MNIST', 'CIFAR10']:
@@ -148,32 +157,53 @@ def main(args):
                 current_loss = train.train_step(x_r, y_r, model, optimizer)
                 wandb.log({"Validation/train_loss": current_loss, "Validation/train_iters": t * args.ITERS + iters})
                 m_train_loss.update_state(current_loss)
+
+                val_acc_container = []
+                val_forgetting_container = []
                 if iters % args.VAL_ITERS == args.VAL_ITERS - 1:
                     # Validation
-                    val_iters = 0
-                    for x, y in val_ds:
-                        val_iters += 1
-                        logits = model(x, training=False)
-                        current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
-                        m_val_loss.update_state(current_loss)
-                        m_val_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
-                        if val_iters == args.VAL_BATCHES:
-                            # Get metrics
-                            train_loss = m_train_loss.result()
-                            m_train_loss.reset_states()
-                            val_acc = m_val_acc.result()
-                            m_val_acc.reset_states()
-                            val_loss = m_val_loss.result()
-                            m_val_loss.reset_states()
-                            print("Task: {} Iter: {} Train Loss: {:.3} Val Loss: {:.3} Val Accuracy: {:.3}".format(t,
-                                                                                                                iters,
-                                                                                                                train_loss,
-                                                                                                                val_loss,
-                                                                                                                val_acc))
-                            # Reset validation iterations
-                            val_iters = 0
-                            break
-            wandb.log({"Validation/Val_acc": val_acc, "Validation/Task": t + 1})
+                    for idx, val_ds in enumerate(val_ds_splitted):
+                        val_iters = 0
+                        for x, y in val_ds:
+                            val_iters += 1
+                            logits = model(x, training=False)
+                            current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
+                            m_val_loss.update_state(current_loss)
+                            m_val_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
+                            if val_iters == args.VAL_BATCHES / 5:
+                                # Get metrics
+                                train_loss = m_train_loss.result()
+                                m_train_loss.reset_states()
+                                val_acc = m_val_acc.result()
+                                m_val_acc.reset_states()
+                                val_loss = m_val_loss.result()
+                                m_val_loss.reset_states()
+                                print("Task: {} Iter: {} Classes:{} Train Loss: {:.3} Val Loss: {:.3} Val Accuracy: {:.3}".format(t,
+                                                                                                                                  iters,
+                                                                                                                                  task_classes[idx],
+                                                                                                                                  train_loss,
+                                                                                                                                  val_loss,
+                                                                                                                                  val_acc))
+                                # Reset validation iterations
+                                val_iters = 0
+                                break
+                        
+                        val_acc_splitted[idx].append(val_acc)
+                        val_acc_container.append(val_acc)
+                        if len(val_acc_splitted[idx]) < idx + 2:
+                            val_forgetting = 0
+                        else:
+                            val_forgetting = val_acc_splitted[idx][idx] - val_acc
+                        val_forgetting_splitted[idx].append(val_forgetting)
+                        val_forgetting_container.append(val_forgetting)
+                        wandb.log({"Validation/Val_acc_{}".format(task_classes[idx]): val_acc,
+                                   "Validation/Val_forgetting_{}".format(task_classes[idx]): val_forgetting,
+                                   "Validation/Task_{}".format(task_classes[idx]): t + 1})
+                    s = 0 if t == 0 else np.sum(val_forgetting_container) / t
+                    wandb.log({"Validation/Val_acc": np.mean(val_acc_container),
+                               "Validation/Val_forgetting": 0 if t == 0 else np.sum(val_forgetting_container) / t,
+                               "Validation/Task": t + 1})
+                    
 
         # Test model on complete data set
         m_test_acc = tf.keras.metrics.Accuracy()
@@ -211,7 +241,7 @@ if __name__ == "__main__":
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
@@ -223,31 +253,31 @@ if __name__ == "__main__":
                         help='number of iterations for validation training')
     parser.add_argument('--VAL_ITERS', type=int, default=1000,
                         help='Validation interval during test training')
-    parser.add_argument('--VAL_BATCHES', type=int, default=100,
+    parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
     parser.add_argument('--log_histogram', type=bool, default=False,
                         help='whether to log histogram to wandb')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=20, 
+    parser.add_argument('--K', type=int, default=2, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=10,
+    parser.add_argument('--T', type=int, default=1,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
     parser.add_argument('--IN', type=int, default=1,
                         help='number of image update within one outerloop')
-    
+
     parser.add_argument('--lambda_club_content', type=float, default=10)
     parser.add_argument('--lambda_contrast_content', type=float, default=10)
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=2)
+    parser.add_argument('--group', type=int, default=10)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization'],

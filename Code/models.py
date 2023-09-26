@@ -995,13 +995,27 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                     
                     distill_step += 1
                 # Perform innerloop training step
+                #################################################################
                 x_t, y_t = buf.sample(self.batch_size)
+                
+                # x_t, y_t = None, None
                 if x_t is not None:
                     x_comb = tf.concat((x_ds, x_t), axis=0)
                     y_comb = tf.concat((y_ds, y_t), axis=0)
                 else:
                     x_comb = x_ds # Compress at first, then train with real data or real+syn data.
                     y_comb = y_ds # batch size of real data and synthetic data are both 256
+
+                    # images = []
+                    # for i in range(2):
+                    #     images.append(self.stylers[i](self.base_image))
+                    # images = tf.concat(images, axis=0)
+                    # indices = np.random.permutation(128) # Max number of images in current classes
+                    # indices = list(indices % 40)
+                    # x_comb = tf.gather(images, indices).numpy()
+                    # y_comb = tf.gather(self.syn_label, indices).numpy()
+                    
+                #################################################################
                 
                 # innerloop = c[1]
                 for _ in range(self.IN):
@@ -1085,51 +1099,11 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
     
     def get_storage(self, b_s, s_s):
         self.image_params_count_exp = keras.backend.count_params(b_s)
+        self.styler_params_count_exp = 0
         for styler in s_s:
             self.styler_params_count_exp += keras.utils.layer_utils.count_params(styler.trainable_weights)
         self.image_params_count += self.image_params_count_exp
         self.styler_params_count += self.styler_params_count_exp
-
-
-class StyleTranslator(tf.keras.Model):
-    """
-    Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
-    """
-
-    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
-        super(StyleTranslator, self).__init__()
-        self.in_channel = in_channel
-        self.mid_channel = mid_channel
-        self.out_channel = out_channel
-        self.img_size = image_size
-        self.kernel_size = kernel_size
-        self.enc = None
-        self.scale = None
-        self.shift = None
-        self.dec = None
-        self.norm_0 = None
-        self.norm_1 = None
-
-    def build(self, input_shape):
-        self.norm_0 = tfa.layers.InstanceNormalization()
-        self.norm_1 = tfa.layers.InstanceNormalization()
-        self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-        self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
-        self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
-        super(StyleTranslator, self).build(input_shape)
-        
-    def call(self, inputs, training=None):
-        output = self.norm_0(inputs)
-        output = self.enc(output)
-        output = self.transform(output)
-        output = self.dec(output)
-        output = self.norm_1(output)
-        output = tf.keras.activations.sigmoid(output)
-        return output
-    
-    def model(self):
-        x = tf.keras.Input(shape=(28, 28, 1))
-        return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 # class StyleTranslator(tf.keras.Model):
@@ -1148,23 +1122,64 @@ class StyleTranslator(tf.keras.Model):
 #         self.scale = None
 #         self.shift = None
 #         self.dec = None
-#         # self.norm = None
+#         self.norm_0 = None
+#         self.norm_1 = None
 
 #     def build(self, input_shape):
+#         self.norm_0 = tfa.layers.InstanceNormalization()
+#         self.norm_1 = tfa.layers.InstanceNormalization()
 #         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
 #         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
 #         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
 #         super(StyleTranslator, self).build(input_shape)
         
 #     def call(self, inputs, training=None):
-#         output = self.enc(inputs)
+#         output = self.norm_0(inputs)
+#         output = self.enc(output)
 #         output = self.transform(output)
 #         output = self.dec(output)
+#         output = self.norm_1(output)
+#         output = tf.keras.activations.sigmoid(output)
 #         return output
     
 #     def model(self):
 #         x = tf.keras.Input(shape=(28, 28, 1))
 #         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+
+class StyleTranslator(tf.keras.Model):
+    """
+    Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
+    """
+
+    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
+        super(StyleTranslator, self).__init__()
+        self.in_channel = in_channel
+        self.mid_channel = mid_channel
+        self.out_channel = out_channel
+        self.img_size = image_size
+        self.kernel_size = kernel_size
+        self.enc = None
+        self.scale = None
+        self.shift = None
+        self.dec = None
+        # self.norm = None
+
+    def build(self, input_shape):
+        self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
+        self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
+        self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
+        super(StyleTranslator, self).build(input_shape)
+        
+    def call(self, inputs, training=None):
+        output = self.enc(inputs)
+        output = self.transform(output)
+        output = self.dec(output)
+        return output
+    
+    def model(self):
+        x = tf.keras.Input(shape=(28, 28, 1))
+        return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class Extractor(tf.keras.Model):
