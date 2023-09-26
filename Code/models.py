@@ -5,11 +5,12 @@ This file contains models.
 import tensorflow as tf
 import tensorflow_addons as tfa
 import keras
-import utils
 import abc
 import numpy as np
 import wandb
 from tqdm import tqdm
+import utils
+from utils import get_batch_size, sample_batch
 
     
 class CNN(tf.keras.Model):
@@ -946,7 +947,8 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         
         return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
     
-    def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, verbose=False):
+    def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, current_data_proportion=0,
+                 verbose=False):
 
         # Create and initialize synthetic data
         # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
@@ -994,30 +996,24 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                                "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
                     
                     distill_step += 1
+
                 # Perform innerloop training step
                 #################################################################
-                x_t, y_t = buf.sample(self.batch_size)
-                
-                # x_t, y_t = None, None
+                batch_size_previous_classes, batch_size_current_classes = get_batch_size(self.batch_size, current_data_proportion, c)
+                x_t, y_t = buf.sample(batch_size_previous_classes)
+
                 if x_t is not None:
+                    x_ds, y_ds = sample_batch(x_ds, y_ds, batch_size_current_classes)
                     x_comb = tf.concat((x_ds, x_t), axis=0)
                     y_comb = tf.concat((y_ds, y_t), axis=0)
                 else:
+                    batch_size_current_classes = 256
+                    x_ds, y_ds = sample_batch(x_ds, y_ds, batch_size_current_classes)
                     x_comb = x_ds # Compress at first, then train with real data or real+syn data.
                     y_comb = y_ds # batch size of real data and synthetic data are both 256
 
-                    # images = []
-                    # for i in range(2):
-                    #     images.append(self.stylers[i](self.base_image))
-                    # images = tf.concat(images, axis=0)
-                    # indices = np.random.permutation(128) # Max number of images in current classes
-                    # indices = list(indices % 40)
-                    # x_comb = tf.gather(images, indices).numpy()
-                    # y_comb = tf.gather(self.syn_label, indices).numpy()
-                    
                 #################################################################
-                
-                # innerloop = c[1]
+
                 for _ in range(self.IN):
                     train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
                 loss_name = 'InnerLoop/Class ' + str(c)
@@ -1044,7 +1040,7 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
     def compress_add(self, ds, c, mdl, verbose=False, num_stylers=2, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
                      num_bases=10, K=10, T=10, I=10, IN=1, lambda_club_content=10, lambda_cls_content = 1, 
-                     lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False):
+                     lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False, current_data_proportion=0):
         
         # Create compressor
         fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
@@ -1054,7 +1050,8 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         # Compress data
         self.num_stylers = num_stylers
         print("Compressing class {} down to {} stylers and 2 * {} base images...".format(c, self.num_stylers, num_bases))
-        b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, verbose=False)
+        b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, 
+                                     current_data_proportion=current_data_proportion, verbose=False)
 
         self.get_storage(b_s, s_s)
         wandb.log({'image_params_count': self.image_params_count,
@@ -1106,47 +1103,6 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.styler_params_count += self.styler_params_count_exp
 
 
-# class StyleTranslator(tf.keras.Model):
-#     """
-#     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
-#     """
-
-#     def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
-#         super(StyleTranslator, self).__init__()
-#         self.in_channel = in_channel
-#         self.mid_channel = mid_channel
-#         self.out_channel = out_channel
-#         self.img_size = image_size
-#         self.kernel_size = kernel_size
-#         self.enc = None
-#         self.scale = None
-#         self.shift = None
-#         self.dec = None
-#         self.norm_0 = None
-#         self.norm_1 = None
-
-#     def build(self, input_shape):
-#         self.norm_0 = tfa.layers.InstanceNormalization()
-#         self.norm_1 = tfa.layers.InstanceNormalization()
-#         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-#         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
-#         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
-#         super(StyleTranslator, self).build(input_shape)
-        
-#     def call(self, inputs, training=None):
-#         output = self.norm_0(inputs)
-#         output = self.enc(output)
-#         output = self.transform(output)
-#         output = self.dec(output)
-#         output = self.norm_1(output)
-#         output = tf.keras.activations.sigmoid(output)
-#         return output
-    
-#     def model(self):
-#         x = tf.keras.Input(shape=(28, 28, 1))
-#         return tf.keras.Model(inputs=[x], outputs=self.call(x))
-
-
 class StyleTranslator(tf.keras.Model):
     """
     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
@@ -1163,23 +1119,64 @@ class StyleTranslator(tf.keras.Model):
         self.scale = None
         self.shift = None
         self.dec = None
-        # self.norm = None
+        self.norm_0 = None
+        self.norm_1 = None
 
     def build(self, input_shape):
+        self.norm_0 = tfa.layers.InstanceNormalization()
+        self.norm_1 = tfa.layers.InstanceNormalization()
         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
         super(StyleTranslator, self).build(input_shape)
         
     def call(self, inputs, training=None):
-        output = self.enc(inputs)
+        output = self.norm_0(inputs)
+        output = self.enc(output)
         output = self.transform(output)
         output = self.dec(output)
+        output = self.norm_1(output)
+        output = tf.keras.activations.sigmoid(output)
         return output
     
     def model(self):
         x = tf.keras.Input(shape=(28, 28, 1))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+
+# class StyleTranslator(tf.keras.Model):
+#     """
+#     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
+#     """
+
+#     def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
+#         super(StyleTranslator, self).__init__()
+#         self.in_channel = in_channel
+#         self.mid_channel = mid_channel
+#         self.out_channel = out_channel
+#         self.img_size = image_size
+#         self.kernel_size = kernel_size
+#         self.enc = None
+#         self.scale = None
+#         self.shift = None
+#         self.dec = None
+#         # self.norm = None
+
+#     def build(self, input_shape):
+#         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
+#         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
+#         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
+#         super(StyleTranslator, self).build(input_shape)
+        
+#     def call(self, inputs, training=None):
+#         output = self.enc(inputs)
+#         output = self.transform(output)
+#         output = self.dec(output)
+#         return output
+    
+#     def model(self):
+#         x = tf.keras.Input(shape=(28, 28, 1))
+#         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class Extractor(tf.keras.Model):

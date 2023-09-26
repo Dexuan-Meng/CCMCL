@@ -24,10 +24,11 @@ def main(args):
     # Load data set
     if args.dataset == 'MNIST':
         ds = datasets.SplitMNIST(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
-        _, val_ds, test_ds = ds.get_all()
+        _, _, test_ds = ds.get_all()
         val_ds_splitted = []
         for classes in task_classes:
-            val_ds_splitted.append(val_ds.get_split(classes).cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
+            _, val_ds, _ = ds.get_split(classes)
+            val_ds_splitted.append(val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
         test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
         IMG_SHAPE = (28, 28, 1)
     elif args.dataset == 'CIFAR10':
@@ -51,7 +52,7 @@ def main(args):
     for run in range(args.RUNS):
 
         wandb.init(sync_tensorboard=False,
-                name="Learning rate: {} ".format(args.dataset) + ID, 
+                name="Forgetting record: {} ".format(args.dataset) + ID, 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -97,7 +98,8 @@ def main(args):
                 'lambda_likeli_content': args.lambda_likeli_content,
                 'lambda_cls_content': args.lambda_cls_content,
                 'lambda_contrast_content': args.lambda_contrast_content,
-                'log_histogram': args.log_histogram
+                'log_histogram': args.log_histogram,
+                'current_data_proportion': args.current_data_proportion
             }
 
         train = utils.Trainer()
@@ -257,15 +259,17 @@ if __name__ == "__main__":
                         help='Batchsize for validation')
     parser.add_argument('--log_histogram', type=bool, default=False,
                         help='whether to log histogram to wandb')
+    parser.add_argument('--current_data_proportion', type=float, default=0,
+                        help='proportion of data of current classes for updating model in innerloop')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=1,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
