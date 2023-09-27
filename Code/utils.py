@@ -228,3 +228,21 @@ class SupConLoss(tf.keras.layers.Layer):
         loss = tf.math.reduce_mean(tf.reshape(loss, (anchor_count, batch_size)))
 
         return loss
+
+
+def get_batch_size(batch_size, current_data_proportion, current_class):
+    if current_data_proportion == 0:
+        batch_size_current_classes = int(2 * batch_size * (2 / (current_class[0] + 2)))
+    elif current_data_proportion > 0.5:
+        raise "current_data_proportion must not greater than 0.5"
+    else:
+        batch_size_current_classes = int(2 * batch_size * current_data_proportion)
+    batch_size_previous_classes = 2 * batch_size - batch_size_current_classes
+    return batch_size_previous_classes, batch_size_current_classes
+
+
+def sample_batch(batch_x, batch_y, batch_size):
+    indices = np.random.permutation(batch_size)
+    x_ds = tf.gather(batch_x, indices)
+    y_ds = tf.gather(batch_y, indices)
+    return x_ds, y_ds

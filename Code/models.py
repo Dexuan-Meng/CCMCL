@@ -947,11 +947,11 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         
         return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
     
-    def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, current_data_proportion=0,
-                 verbose=False):
+    def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, use_image_being_condensed=False, 
+                 current_data_proportion=0, verbose=False):
 
         # Create and initialize synthetic data
-        # k = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
+        # num_base = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
         self.num_base = num_base
         self.num_stylers = num_stylers
         self.base_image = tf.Variable(tf.random.uniform((self.num_base * 2, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
@@ -999,18 +999,28 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
 
                 # Perform innerloop training step
                 #################################################################
-                batch_size_previous_classes, batch_size_current_classes = get_batch_size(self.batch_size, current_data_proportion, c)
-                x_t, y_t = buf.sample(batch_size_previous_classes)
-
-                if x_t is not None:
-                    x_ds, y_ds = sample_batch(x_ds, y_ds, batch_size_current_classes)
-                    x_comb = tf.concat((x_ds, x_t), axis=0)
-                    y_comb = tf.concat((y_ds, y_t), axis=0)
+                if c[0] == 0:
+                    batch_size_previous_classes, batch_size_current_classes = 0, 256
                 else:
-                    batch_size_current_classes = 256
-                    x_ds, y_ds = sample_batch(x_ds, y_ds, batch_size_current_classes)
-                    x_comb = x_ds # Compress at first, then train with real data or real+syn data.
-                    y_comb = y_ds # batch size of real data and synthetic data are both 256
+                    batch_size_previous_classes, batch_size_current_classes = get_batch_size(self.batch_size, current_data_proportion, c)
+                
+                if not use_image_being_condensed:
+                    x_current_class, y_current_class = sample_batch(x_ds, y_ds, batch_size_current_classes)
+                else:
+                    syn_image_being_condensed = []
+                    for idx in range(len(c)):
+                        for styler in self.stylers:
+                            syn_image_being_condensed.append(styler(self.base_image[idx * self.num_base: (idx + 1) * self.num_base]))
+                    syn_image_being_condensed = tf.concat(syn_image_being_condensed, axis=0)
+                    x_current_class, y_current_class = sample_batch(syn_image_being_condensed, y_ds, batch_size_current_classes)
+
+                if batch_size_previous_classes != 0:
+                    x_t, y_t = buf.sample(batch_size_previous_classes)
+                    x_comb = tf.concat((x_current_class, x_t), axis=0)
+                    y_comb = tf.concat((y_current_class, y_t), axis=0)
+                else:
+                    x_comb = x_current_class # Compress at first, then train with real data or real+syn data.
+                    y_comb = y_current_class # batch size of real data and synthetic data are both 256
 
                 #################################################################
 
@@ -1040,7 +1050,8 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
     def compress_add(self, ds, c, mdl, verbose=False, num_stylers=2, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
                      num_bases=10, K=10, T=10, I=10, IN=1, lambda_club_content=10, lambda_cls_content = 1, 
-                     lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False, current_data_proportion=0):
+                     lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False, current_data_proportion=0,
+                     use_image_being_condensed=False):
         
         # Create compressor
         fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
@@ -1051,7 +1062,8 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.num_stylers = num_stylers
         print("Compressing class {} down to {} stylers and 2 * {} base images...".format(c, self.num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, 
-                                     current_data_proportion=current_data_proportion, verbose=False)
+                                     use_image_being_condensed=use_image_being_condensed, current_data_proportion=current_data_proportion, 
+                                     verbose=False)
 
         self.get_storage(b_s, s_s)
         wandb.log({'image_params_count': self.image_params_count,
