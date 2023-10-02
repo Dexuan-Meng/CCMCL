@@ -7,6 +7,7 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
 import numpy as np
+import wandb
 
 
 # Enable dynamic memory allocation
@@ -246,3 +247,55 @@ def sample_batch(batch_x, batch_y, batch_size):
     x_ds = tf.gather(batch_x, indices)
     y_ds = tf.gather(batch_y, indices)
     return x_ds, y_ds
+
+
+class ModelStack():
+    def __init__(self, max_length, substitute='random'):
+        self.model_list = []
+        self.max_length = max_length
+        self.step_list = list(np.zeros(self.max_length))
+        self.len = 0
+        self.working_index = None
+        self.update_flag = True
+        self.clock = 0
+        self.wandb_log_dict_keys = {}
+        for i in range(max_length):
+            self.wandb_log_dict_keys[i] = "model_stack/model_{}_step".format(i)
+        self.substitute = substitute
+
+    def add(self, model):
+        if self.len < self.max_length:
+            self.model_list.append(model)
+        else:
+            if self.substitute == 'random':
+                item_to_be_substituted = np.random.randint(self.max_length)
+            elif self.substitute == 'max':
+                item_to_be_substituted = np.argmax(self.step_list)
+            self.model_list[item_to_be_substituted] = model # model
+            self.step_list[item_to_be_substituted] = 0 # number of steps the model has been train for.
+        # assert len(self.model_list) == len(self.step_list), "Error: len(model) is not equal to len(step)"
+        self.len = len(self.model_list)
+
+    def sample(self):
+        if self.update_flag == True:
+            self.working_index = np.random.randint(self.len)
+        else:
+            raise ValueError("Sampled model haven't been update even once")
+        self.update_flag = False
+        return self.model_list[self.working_index]
+    
+    def after_update(self):
+        self.step_list[self.working_index] += 1
+        self.update_flag = True
+        self.inner_clock()
+
+    def inner_clock(self):
+        if self.clock % 1 == 0:
+            wandb_log_dict = {}
+            for i in range(self.max_length):
+                wandb_log_dict[self.wandb_log_dict_keys[i]] = self.step_list[i]
+            wandb.log(wandb_log_dict)
+        self.clock += 1
+    
+
+        

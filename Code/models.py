@@ -10,7 +10,7 @@ import numpy as np
 import wandb
 from tqdm import tqdm
 import utils
-from utils import get_batch_size, sample_batch
+from utils import get_batch_size, sample_batch, ModelStack
 
     
 class CNN(tf.keras.Model):
@@ -643,6 +643,7 @@ class FactorizationCompressor(DataCompressor):
                 gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
                 inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
             dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
+            # dist_loss += tf.divide(tf.norm(tf.subtract(g_norm, gs_norm), ord='euclidean'), tf.norm(g_norm, ord='euclidean'))
 
         return dist_loss
 
@@ -867,6 +868,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                                                      styler_learning_rate, K, T, mdl, I, img_shape, lambda_club_content,
                                                      lambda_cls_content, lambda_likeli_content, lambda_contrast_content)
         self.ds_iter = {}
+        self.mdl_template = mdl
         self.IN = IN
         for c in class_labels:
             self.ds_iter[c] = datasets[c].as_numpy_iterator()
@@ -948,7 +950,112 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
     
     def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, use_image_being_condensed=False, 
-                 current_data_proportion=0, verbose=False):
+                 current_data_proportion=0, pretrain=False, max_model_number=5, substitude_method='random', verbose=False):
+
+        # Create and initialize synthetic data
+        # num_base = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
+        self.num_base = num_base
+        self.num_stylers = num_stylers
+        self.base_image = tf.Variable(tf.random.uniform((self.num_base * 2, img_shape[0], img_shape[1], img_shape[2]), maxval=tf.constant(1.0, dtype=tf.float32)))
+        classes_labels = [tf.constant(c[0], shape=(self.num_stylers * self.num_base,), dtype=tf.int32), 
+                       tf.constant(c[1], shape=(self.num_stylers * self.num_base,), dtype=tf.int32)]
+        self.syn_label = tf.Variable(tf.concat([tf.one_hot(classes_labels[0], 10), tf.one_hot(classes_labels[1], 10)], 0), dtype=tf.float32)
+        for _ in range(num_stylers):
+            styler = StyleTranslator(in_channel=img_shape[2], mid_channel=3, out_channel=img_shape[2], image_size=img_shape, kernel_size=3)
+            styler.build((None, img_shape[0], img_shape[1], img_shape[2]))
+            self.stylers.append(styler)
+
+        # Preparation for log
+        starting_step = int(self.K * self.T * self.I * c[0] * 0.5)
+        distill_step = 0
+        update_step = 0
+
+        model_stack = ModelStack(max_model_number, substitute=substitude_method)
+
+        for k in tqdm(range(self.K)):
+
+            # Reinitialize model
+            # _ = self.mdl_template(self.base_image)
+            utils.reinitialize_model(self.mdl_template)
+            model_stack.add(self.mdl_template)
+            
+            t = 0
+
+            pretrain_step = 0
+
+            if (k % 3 == 1) & pretrain:
+                pretrain_step = np.random.randint(10)
+
+            for t in range(self.T + pretrain_step):
+
+                self.mdl = model_stack.sample()
+
+                x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
+                x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
+                x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
+                y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
+                
+                if t >= pretrain_step:
+                    # Perform distillation step
+                    for i in range(self.I): # one batch of dataset distills the components I iterations
+                        dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
+                        wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
+                                "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
+                                "Distill/class {}/Grand_loss".format(self.class_label): loss})
+                        if log_histogram:
+                            wandb.log({
+                                "Distill/class {}/Synthetic_Pixels".format(self.class_label):
+                                wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
+                                "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
+                                })
+                        wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                        cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
+                        wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
+                                "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
+                                "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
+                                "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
+                        
+                        distill_step += 1
+
+                # Perform innerloop training step
+                #################################################################
+                if c[0] == 0:
+                    batch_size_previous_classes, batch_size_current_classes = 0, 256
+                else:
+                    batch_size_previous_classes, batch_size_current_classes = get_batch_size(self.batch_size, current_data_proportion, c)
+                
+                if not use_image_being_condensed:
+                    x_current_class, y_current_class = sample_batch(x_ds, y_ds, batch_size_current_classes)
+                else:
+                    syn_image_being_condensed = []
+                    for idx in range(len(c)):
+                        for styler in self.stylers:
+                            syn_image_being_condensed.append(styler(self.base_image[idx * self.num_base: (idx + 1) * self.num_base]))
+                    syn_image_being_condensed = tf.concat(syn_image_being_condensed, axis=0)
+                    x_current_class, y_current_class = sample_batch(syn_image_being_condensed, y_ds, batch_size_current_classes)
+
+                if batch_size_previous_classes != 0:
+                    x_t, y_t = buf.sample(batch_size_previous_classes)
+                    x_comb = tf.concat((x_current_class, x_t), axis=0)
+                    y_comb = tf.concat((y_current_class, y_t), axis=0)
+                else:
+                    x_comb = x_current_class # Compress at first, then train with real data or real+syn data.
+                    y_comb = y_current_class # batch size of real data and synthetic data are both 256
+
+                #################################################################
+
+                for _ in range(self.IN):
+                    train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                loss_name = 'InnerLoop/Class ' + str(c)
+                wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
+                model_stack.after_update()
+                update_step += 1
+            if verbose:
+                print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
+        return self.base_image, self.stylers, self.syn_label
+    
+    def compress_old(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, use_image_being_condensed=False, 
+                 current_data_proportion=0, pretrain=False, verbose=False):
 
         # Create and initialize synthetic data
         # num_base = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
@@ -969,33 +1076,45 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         update_step = 0
 
         for k in tqdm(range(self.K)):
+
             # Reinitialize model
             utils.reinitialize_model(self.mdl)
-            for t in range(self.T):
+
+            t = 0
+
+            pretrain_step = 0
+
+            if (k % 3 == 1) & pretrain:
+                pretrain_step = np.random.randint(10)
+
+            for t in range(self.T + pretrain_step):
+
                 x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
                 x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
                 x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
                 y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
-                # Perform distillation step
-                for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
-                    wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
-                            "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
-                            "Distill/class {}/Grand_loss".format(self.class_label): loss})
-                    if log_histogram:
-                        wandb.log({
-                            "Distill/class {}/Synthetic_Pixels".format(self.class_label):
-                            wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
-                            "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
-                            })
-                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                    cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
-                    wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
-                               "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
-                               "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
-                               "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
-                    
-                    distill_step += 1
+                
+                if t >= pretrain_step:
+                    # Perform distillation step
+                    for i in range(self.I): # one batch of dataset distills the components I iterations
+                        dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
+                        wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
+                                "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
+                                "Distill/class {}/Grand_loss".format(self.class_label): loss})
+                        if log_histogram:
+                            wandb.log({
+                                "Distill/class {}/Synthetic_Pixels".format(self.class_label):
+                                wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
+                                "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
+                                })
+                        wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                        cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
+                        wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
+                                "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
+                                "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
+                                "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
+                        
+                        distill_step += 1
 
                 # Perform innerloop training step
                 #################################################################
@@ -1051,7 +1170,7 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
                      num_bases=10, K=10, T=10, I=10, IN=1, lambda_club_content=10, lambda_cls_content = 1, 
                      lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False, current_data_proportion=0,
-                     use_image_being_condensed=False):
+                     use_image_being_condensed=False, pretrain=False, max_model_number=5, substitude_method='random'):
         
         # Create compressor
         fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
@@ -1063,7 +1182,7 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         print("Compressing class {} down to {} stylers and 2 * {} base images...".format(c, self.num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, 
                                      use_image_being_condensed=use_image_being_condensed, current_data_proportion=current_data_proportion, 
-                                     verbose=False)
+                                     verbose=False, pretrain=pretrain, max_model_number=max_model_number, substitude_method=substitude_method)
 
         self.get_storage(b_s, s_s)
         wandb.log({'image_params_count': self.image_params_count,
