@@ -246,7 +246,7 @@ if __name__ == "__main__":
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.1,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
@@ -254,9 +254,9 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=10,
+    parser.add_argument('--ITERS', type=int, default=1000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=10,
+    parser.add_argument('--VAL_ITERS', type=int, default=1000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
@@ -269,13 +269,13 @@ if __name__ == "__main__":
                             classes while updating model in Innerloop')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=1,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')

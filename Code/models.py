@@ -1115,47 +1115,6 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.styler_params_count += self.styler_params_count_exp
 
 
-class StyleTranslator(tf.keras.Model):
-    """
-    Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
-    """
-
-    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
-        super(StyleTranslator, self).__init__()
-        self.in_channel = in_channel
-        self.mid_channel = mid_channel
-        self.out_channel = out_channel
-        self.img_size = image_size
-        self.kernel_size = kernel_size
-        self.enc = None
-        self.scale = None
-        self.shift = None
-        self.dec = None
-        self.norm_0 = None
-        self.norm_1 = None
-
-    def build(self, input_shape):
-        self.norm_0 = tfa.layers.InstanceNormalization()
-        self.norm_1 = tfa.layers.InstanceNormalization()
-        self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-        self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
-        self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
-        super(StyleTranslator, self).build(input_shape)
-        
-    def call(self, inputs, training=None):
-        output = self.norm_0(inputs)
-        output = self.enc(output)
-        output = self.transform(output)
-        output = self.dec(output)
-        output = self.norm_1(output)
-        output = tf.keras.activations.sigmoid(output)
-        return output
-    
-    def model(self):
-        x = tf.keras.Input(shape=(28, 28, 1))
-        return tf.keras.Model(inputs=[x], outputs=self.call(x))
-
-
 # class StyleTranslator(tf.keras.Model):
 #     """
 #     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
@@ -1172,23 +1131,85 @@ class StyleTranslator(tf.keras.Model):
 #         self.scale = None
 #         self.shift = None
 #         self.dec = None
-#         # self.norm = None
+#         self.norm_0 = None
+#         self.norm_1 = None
 
 #     def build(self, input_shape):
+#         self.norm_0 = tfa.layers.InstanceNormalization()
+#         self.norm_1 = tfa.layers.InstanceNormalization()
 #         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
 #         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
 #         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
 #         super(StyleTranslator, self).build(input_shape)
         
 #     def call(self, inputs, training=None):
-#         output = self.enc(inputs)
+#         output = self.norm_0(inputs)
+#         output = self.enc(output)
 #         output = self.transform(output)
 #         output = self.dec(output)
+#         output = self.norm_1(output)
+#         output = tf.keras.activations.sigmoid(output)
 #         return output
     
 #     def model(self):
 #         x = tf.keras.Input(shape=(28, 28, 1))
 #         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+
+class StyleTranslator(tf.keras.Model):
+    """
+    Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
+    !! Cross Hallucination: Hallucinate multiple base images to one synthetic image.
+    """
+
+    def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
+        super(StyleTranslator, self).__init__()
+        self.in_channel = in_channel
+        self.mid_channel = mid_channel
+        self.out_channel = out_channel
+        self.img_size = image_size
+        
+        self.kernel_size_0 = kernel_size
+        # self.kernel_size_1 = kernel_size
+        self.enc = None
+        self.scale = None
+        self.shift = None
+        self.dec = None
+        self.norm_0 = None
+        self.norm_1 = None
+
+    def build(self, input_shape):
+        self.encoder = tf.keras.Sequential()
+        self.encoder.add(tfa.layers.InstanceNormalization())
+        self.encoder.add(tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size_0, name='Conv2D_0'))
+        # self.encoder.add(tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size_1, name='Conv2D_1'))
+        # self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
+        # self.transform
+        self.transform = TransformLayer(self.img_size, self.kernel_size_0, self.mid_channel)
+        self.decoder = tf.keras.Sequential()
+        # self.decoder.add(tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size_1, name='Conv2DTransposed_1'))
+        self.decoder.add(tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size_0, name='Conv2DTransposed_0'))
+        self.decoder.add(tfa.layers.InstanceNormalization())
+        self.weighted_add = WeightedAdd()
+        # self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
+        super(StyleTranslator, self).build(input_shape)
+        
+    def call(self, inputs, training=None):
+
+        output_0 = self.encoder(inputs)
+        output_0 = self.transform(output_0)
+        output_0 = self.decoder(output_0)
+        inputs_1 = tf.random.shuffle(inputs, seed=1)
+        output_1 = self.encoder(inputs_1)
+        output_1 = self.transform(output_1)
+        output_1 = self.decoder(output_1)
+
+        output = tf.keras.activations.sigmoid(self.weighted_add(output_0, output_1))
+        return output
+    
+    def model(self):
+        x = tf.keras.Input(shape=(28, 28, 1))
+        return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class Extractor(tf.keras.Model):
@@ -1277,3 +1298,20 @@ class TransformLayer(tf.keras.layers.Layer):
 
     def call(self, inputs):
         return inputs * self.scale + self.shift
+    
+
+class WeightedAdd(keras.layers.Layer):
+    def __init__(self):
+        super(WeightedAdd, self).__init__()
+        w_init = tf.random_normal_initializer()
+        self.w1 = tf.Variable(
+            initial_value=w_init(shape=(), dtype="float32"),
+            trainable=True,
+        )
+        self.w2 = tf.Variable(
+            initial_value=w_init(shape=(), dtype="float32"),
+            trainable=True,
+        )      
+
+    def call(self, input1, input2):
+        return tf.multiply(input1, self.w1) + tf.multiply(input2, self.w2)
