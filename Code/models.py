@@ -906,18 +906,21 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         # compute contrastive loss and update extractor
         sim_content_loss = 0
         with tf.GradientTape() as tape_extractor:
-            
-            syn_images = []
-            for i in range(len(self.stylers)):
-                syn_images.append(self.stylers[i](self.base_image))
-            
+
+            # get composed images, with 0:20 of class 0, and 21:40 of class 1
+            # if simply styler_0(base_image) + styler_1(base_image): 0:20 will be class 0 by styler_0 and class 1 by styler_0
             indices = np.random.permutation(self.num_stylers)
-            seed = np.random.randint(1000)
-            comp = tf.concat(
-                [syn_images[indices[0]][:self.num_base], syn_images[indices[1]][:self.num_base], syn_images[indices[0]][self.num_base:], syn_images[indices[1]][self.num_base:]], axis=0)
+            syn_images = []
+            for i in indices:
+                for j in range(2):
+                    syn_images.append(self.stylers[i](self.base_image[j * self.num_base:(j+1) * self.num_base]))
+            # comp = tf.concat(
+            #     [syn_images[indices[0]][:self.num_base], syn_images[indices[1]][:self.num_base], syn_images[indices[0]][self.num_base:], syn_images[indices[1]][self.num_base:]], axis=0)
+            comp = tf.concat(syn_images, axis=0)
             label = tf.reshape(self.syn_label, (2, self.num_stylers, self.num_base, 10))
             comp_label = tf.concat(
                 [label[0, indices[0], :, :], label[1, indices[0], :, :], label[0, indices[1], :, :], label[0, indices[1], :, :]], axis=0)
+            seed = np.random.randint(1000)
             _, ds_logits = self.extractor(tf.random.shuffle(comp, seed=seed))
             cls_content_loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(
                 tf.random.shuffle(comp_label, seed=seed), ds_logits, from_logits=True
@@ -947,6 +950,26 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         
         return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
     
+    @tf.function
+    def get_twin_image(self):
+        indices = np.random.permutation(len(self.stylers))
+        twin_image = []
+        for i in indices[:2]:
+            for j in range(2): # number of classes in one task
+                twin_image.append(self.stylers[indices[i]](self.base_image[j * self.num_base : (j+1) * self.num_base]))
+        twin_image = tf.concat(twin_image, axis=0)
+        return twin_image
+    
+
+    def hallucination(self, by_class_arranged=False):
+        syn_images = []
+        indices = np.random.permutation(len(self.stylers))
+        for i in indices:
+            for j in range(2): # number of classes in one task
+                syn_images.append(self.stylers[indices[j]](self.base_image[j * self.num_base : (j+1) * self.num_base]))
+        syn_images = tf.concat(syn_images, axis=0)
+        return syn_images
+    
     def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, use_image_being_condensed=False, 
                  current_data_proportion=0, verbose=False):
 
@@ -960,7 +983,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         self.syn_label = tf.Variable(tf.concat([tf.one_hot(classes_labels[0], 10), tf.one_hot(classes_labels[1], 10)], 0), dtype=tf.float32)
         for _ in range(num_stylers):
             styler = StyleTranslator(in_channel=img_shape[2], mid_channel=3, out_channel=img_shape[2], image_size=img_shape, kernel_size=3)
-            styler.build((None, img_shape[0], img_shape[1], img_shape[2]))
+            styler.build((None, img_shape[0], img_shape[1], img_shape[2]), self.num_base)
             self.stylers.append(styler)
 
         # Preparation for log
@@ -985,7 +1008,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                     if log_histogram:
                         wandb.log({
                             "Distill/class {}/Synthetic_Pixels".format(self.class_label):
-                            wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
+                            wandb.Histogram(self.hallucination(), num_bins=512),
                             "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
                             })
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
@@ -1178,7 +1201,7 @@ class StyleTranslator(tf.keras.Model):
         self.norm_0 = None
         self.norm_1 = None
 
-    def build(self, input_shape):
+    def build(self, input_shape, num_base):
         self.encoder = tf.keras.Sequential()
         self.encoder.add(tfa.layers.InstanceNormalization())
         self.encoder.add(tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size_0, name='Conv2D_0'))
@@ -1190,21 +1213,18 @@ class StyleTranslator(tf.keras.Model):
         # self.decoder.add(tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size_1, name='Conv2DTransposed_1'))
         self.decoder.add(tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size_0, name='Conv2DTransposed_0'))
         self.decoder.add(tfa.layers.InstanceNormalization())
-        self.weighted_add = WeightedAdd()
+        self.weighted_sum = WeightedSum(num_base)
         # self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
         super(StyleTranslator, self).build(input_shape)
         
     def call(self, inputs, training=None):
 
-        output_0 = self.encoder(inputs)
-        output_0 = self.transform(output_0)
-        output_0 = self.decoder(output_0)
-        inputs_1 = tf.random.shuffle(inputs, seed=1)
-        output_1 = self.encoder(inputs_1)
-        output_1 = self.transform(output_1)
-        output_1 = self.decoder(output_1)
+        output = self.encoder(inputs)
+        output = self.transform(output)
+        output = self.weighted_sum(output)
+        output = self.decoder(output)
 
-        output = tf.keras.activations.sigmoid(self.weighted_add(output_0, output_1))
+        output = tf.keras.activations.sigmoid(output)
         return output
     
     def model(self):
@@ -1300,18 +1320,15 @@ class TransformLayer(tf.keras.layers.Layer):
         return inputs * self.scale + self.shift
     
 
-class WeightedAdd(keras.layers.Layer):
-    def __init__(self):
-        super(WeightedAdd, self).__init__()
+class WeightedSum(keras.layers.Layer):
+    def __init__(self, num_base):
+        super(WeightedSum, self).__init__()
+        self.num_base = num_base
         w_init = tf.random_normal_initializer()
-        self.w1 = tf.Variable(
-            initial_value=w_init(shape=(), dtype="float32"),
+        self.w = tf.Variable(
+            initial_value=w_init(shape=(num_base, num_base, 1, 1, 1), dtype="float32"),
             trainable=True,
         )
-        self.w2 = tf.Variable(
-            initial_value=w_init(shape=(), dtype="float32"),
-            trainable=True,
-        )      
 
-    def call(self, input1, input2):
-        return tf.multiply(input1, self.w1) + tf.multiply(input2, self.w2)
+    def call(self, input):
+        return tf.reduce_sum(tf.multiply(self.w, tf.expand_dims(input, axis=0)), axis=1)
