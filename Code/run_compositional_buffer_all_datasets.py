@@ -54,7 +54,7 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Proportion Study: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Test: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -269,7 +269,7 @@ if __name__ == "__main__":
                             classes while updating model in Innerloop')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=5,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 

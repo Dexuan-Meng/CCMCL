@@ -960,7 +960,6 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         twin_image = tf.concat(twin_image, axis=0)
         return twin_image
     
-
     def hallucination(self, by_class_arranged=False):
         syn_images = []
         indices = np.random.permutation(len(self.stylers))
