@@ -83,6 +83,8 @@ def main(args):
                 buf = models.DualClassesFactorizationBuffer()
             else:
                 buf = models.FactorizationBalancedBuffer()
+        elif args.plugin == 'multistep':
+            buf = models.DualClassesFactorizationBuffer(multistep=True)
             
             condensation_args = {
                 'num_stylers': args.num_stylers,
@@ -290,7 +292,8 @@ if __name__ == "__main__":
     parser.add_argument('--group', type=int, default=10)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
-                        choices=['Compositional', 'Compressed', 'Factorization'],
+                        choices=['Compositional', 'Compressed', 'Factorization', 
+                                 "multistep"],
                         help='method for condensation')
 
     args = parser.parse_args()
