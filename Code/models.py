@@ -870,7 +870,13 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         self.IN = IN
         for c in class_labels:
             self.ds_iter[c] = datasets[c].as_numpy_iterator()
-    
+        
+        self.img_previous_class_opt = tf.keras.optimizers.SGD(0.01)
+
+    def distill_previous_class(self):
+
+        pass
+
     @tf.function
     def distill_step(self, x_ds, y_ds):
 
@@ -1047,6 +1053,8 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.image_params_count = 0
         self.styler_params_count = 0
 
+        self.old_models = {}
+
     def compress_add(self, ds, c, mdl, verbose=False, num_stylers=2, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
                      num_bases=10, K=10, T=10, I=10, IN=1, lambda_club_content=10, lambda_cls_content = 1, 
@@ -1154,41 +1162,6 @@ class StyleTranslator(tf.keras.Model):
     def model(self):
         x = tf.keras.Input(shape=(28, 28, 1))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
-
-
-# class StyleTranslator(tf.keras.Model):
-#     """
-#     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
-#     """
-
-#     def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
-#         super(StyleTranslator, self).__init__()
-#         self.in_channel = in_channel
-#         self.mid_channel = mid_channel
-#         self.out_channel = out_channel
-#         self.img_size = image_size
-#         self.kernel_size = kernel_size
-#         self.enc = None
-#         self.scale = None
-#         self.shift = None
-#         self.dec = None
-#         # self.norm = None
-
-#     def build(self, input_shape):
-#         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-#         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
-#         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
-#         super(StyleTranslator, self).build(input_shape)
-        
-#     def call(self, inputs, training=None):
-#         output = self.enc(inputs)
-#         output = self.transform(output)
-#         output = self.dec(output)
-#         return output
-    
-#     def model(self):
-#         x = tf.keras.Input(shape=(28, 28, 1))
-#         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class Extractor(tf.keras.Model):
