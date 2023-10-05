@@ -278,7 +278,7 @@ if __name__ == "__main__":
                             iterations, which means distillation start with pretrained model')
     
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=4,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
     parser.add_argument('--max_model_number', type=int, default=10,
