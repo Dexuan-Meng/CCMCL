@@ -5,14 +5,41 @@ This file contains models.
 import tensorflow as tf
 import tensorflow_addons as tfa
 import keras
+from keras import layers
 import abc
 import numpy as np
 import wandb
 from tqdm import tqdm
 import utils
+import copy
 from utils import get_batch_size, sample_batch, ModelStack
 
-    
+
+def get_sequential_model(input_shape):
+
+    model = keras.Sequential(
+        [
+            keras.Input(shape=input_shape),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            tf.keras.layers.Flatten(),
+            layers.Dense(10, activation="softmax")
+        ]
+    )
+
+    return model
+
+
 class CNN(tf.keras.Model):
     """
     Simple and small CNN.
@@ -44,7 +71,7 @@ class CNN(tf.keras.Model):
         self.flatten = tf.keras.layers.Flatten()
         self.dense = tf.keras.layers.Dense(self.n, activation="linear")
         super(CNN, self).build(input_shape)
-        
+    
     def call(self, inputs, training=None):
         output = self.conv0(inputs)
         output = self.norm0(output)
@@ -975,11 +1002,8 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         for k in tqdm(range(self.K)):
 
             # Reinitialize model
-            # _ = self.mdl_template(self.base_image)
             utils.reinitialize_model(self.mdl_template)
-            model_stack.add(self.mdl_template)
-            
-            t = 0
+            model_stack.add(tf.keras.models.clone_model(self.mdl_template))
 
             pretrain_step = 0
 
@@ -1273,41 +1297,6 @@ class StyleTranslator(tf.keras.Model):
     def model(self):
         x = tf.keras.Input(shape=(28, 28, 1))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
-
-
-# class StyleTranslator(tf.keras.Model):
-#     """
-#     Single-layer-Conv2d encoder + scaling + translation + Single-layer-ConvTranspose2d decoder
-#     """
-
-#     def __init__(self, in_channel=3, mid_channel=3, out_channel=3, image_size=(28, 28, 1), kernel_size=3):
-#         super(StyleTranslator, self).__init__()
-#         self.in_channel = in_channel
-#         self.mid_channel = mid_channel
-#         self.out_channel = out_channel
-#         self.img_size = image_size
-#         self.kernel_size = kernel_size
-#         self.enc = None
-#         self.scale = None
-#         self.shift = None
-#         self.dec = None
-#         # self.norm = None
-
-#     def build(self, input_shape):
-#         self.enc = tf.keras.layers.Conv2D(self.mid_channel, self.kernel_size, name='Conv2D')
-#         self.transform = TransformLayer(self.img_size, self.kernel_size, self.mid_channel)
-#         self.dec = tf.keras.layers.Conv2DTranspose(self.out_channel, self.kernel_size, name='Conv2DTransposed')
-#         super(StyleTranslator, self).build(input_shape)
-        
-#     def call(self, inputs, training=None):
-#         output = self.enc(inputs)
-#         output = self.transform(output)
-#         output = self.dec(output)
-#         return output
-    
-#     def model(self):
-#         x = tf.keras.Input(shape=(28, 28, 1))
-#         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
 class Extractor(tf.keras.Model):

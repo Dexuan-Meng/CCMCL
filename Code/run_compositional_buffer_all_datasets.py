@@ -13,6 +13,10 @@ import os
 import wandb
 import time
 from utils import make_grid
+from models import get_sequential_model
+import warnings
+warnings.simplefilter('ignore')
+
 
 def main(args):
     
@@ -64,8 +68,9 @@ def main(args):
 
         start_time = time.time()
         # Instantiate model and trainer
-        model = models.CNN(10)
-        model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        # model = models.CNN(10)
+        # model.build((20, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         # print(model.summary())
         if args.plugin == 'Compositional':
             buf = models.CompositionalBalancedBuffer()
@@ -276,13 +281,13 @@ if __name__ == "__main__":
     parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
-    parser.add_argument('--max_model_number', type=int, default=20,
+    parser.add_argument('--max_model_number', type=int, default=10,
                         help='max number of models stored in ModelStack while distilling images')
-    parser.add_argument('--substitude_method', type=str, default='max', choices=['random', 'max'],
+    parser.add_argument('--substitude_method', type=str, default='random', choices=['random', 'max'],
                         help='criterion to substitude model when max model number is reached. random - \
                             remove old model randomly, max - remove the model with the most update step')
 
-    parser.add_argument('--K', type=int, default=20, 
+    parser.add_argument('--K', type=int, default=50, 
                         help='number of distillation iterations')
     parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
