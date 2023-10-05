@@ -1000,7 +1000,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                                "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
                                "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
                                "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
-                    
+
                     distill_step += 1
 
                 # Perform innerloop training step
@@ -1035,6 +1035,10 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                 loss_name = 'InnerLoop/Class ' + str(c)
                 wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
                 update_step += 1
+
+                # store some models for next task
+                buf.old_models.append(tf.keras.models.clone_model(self.mdl))
+
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
         return self.base_image, self.stylers, self.syn_label
@@ -1053,7 +1057,7 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.image_params_count = 0
         self.styler_params_count = 0
 
-        self.old_models = {}
+        self.old_models = []
 
     def compress_add(self, ds, c, mdl, verbose=False, num_stylers=2, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
