@@ -13,6 +13,8 @@ import os
 import wandb
 import time
 from utils import make_grid
+from models import get_sequential_model
+import warnings
 
 def main(args):
     
@@ -54,17 +56,17 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Proportion Study: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Old Model Study: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
         )
 
         start_time = time.time()
-        # Instantiate model and trainer
-        model = models.CNN(10)
-        model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        # print(model.summary())
+        # # Instantiate model and trainer
+        # model = models.CNN(10)
+        # model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         if args.plugin == 'Compositional':
             buf = models.CompositionalBalancedBuffer()
             condensation_args = {
@@ -102,7 +104,8 @@ def main(args):
                 'lambda_contrast_content': args.lambda_contrast_content,
                 'log_histogram': args.log_histogram,
                 'current_data_proportion': args.current_data_proportion,
-                'use_image_being_condensed': args.use_image_being_condensed
+                'use_image_being_condensed': args.use_image_being_condensed,
+                'old_model_probability': args.old_model_probability
             }
 
         train = utils.Trainer()
@@ -232,6 +235,7 @@ def main(args):
 
 if __name__ == "__main__":
 
+    warnings.filterwarnings('ignore')
     utils.enable_gpu_mem_growth()
 
     parser = argparse.ArgumentParser()
@@ -254,9 +258,9 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=10,
+    parser.add_argument('--ITERS', type=int, default=1000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=10,
+    parser.add_argument('--VAL_ITERS', type=int, default=1000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
@@ -267,15 +271,17 @@ if __name__ == "__main__":
     parser.add_argument('--use_image_being_condensed', type=bool, default=True,
                         help='whether to use image being condensed or real images as data of current \
                             classes while updating model in Innerloop')
+    parser.add_argument('--old_model_probability', type=int, default=5,
+                        help='distill image on old model with probability of 1/p')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=5,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=1,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')

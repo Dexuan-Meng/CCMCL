@@ -5,6 +5,7 @@ This file contains models.
 import tensorflow as tf
 import tensorflow_addons as tfa
 import keras
+from keras import layers
 import abc
 import numpy as np
 import wandb
@@ -12,7 +13,32 @@ from tqdm import tqdm
 import utils
 from utils import get_batch_size, sample_batch
 
-    
+
+def get_sequential_model(input_shape):
+
+    model = keras.Sequential(
+        [
+            keras.Input(shape=input_shape),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            tf.keras.layers.Flatten(),
+            layers.Dense(10, activation="softmax")
+        ]
+    )
+
+    return model
+
+
 class CNN(tf.keras.Model):
     """
     Simple and small CNN.
@@ -878,7 +904,38 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         pass
 
     @tf.function
-    def distill_step(self, x_ds, y_ds):
+    def matching_loss(self, mdl, x, y, base_image, syn_label):
+        # Minimize cosine similarity between gradients
+        with tf.GradientTape() as inner_tape:
+            logits_x = mdl(x, training=False)
+            loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
+        grads = inner_tape.gradient(loss_x, mdl.trainable_variables)
+
+        # Make prediction using model
+        with tf.GradientTape() as inner_tape:
+            comp = self.compose_image(base_image, self.stylers)
+            # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(self.base_image, axis=0)), axis=1))
+            logits_s = mdl(comp, training=False)
+            loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(syn_label, logits_s, from_logits=True))
+        grads_s = inner_tape.gradient(loss_s, mdl.trainable_variables)
+
+        # Compute matching loss
+        dist_loss = tf.constant(0.0, dtype=tf.float32)
+        for g, gs in zip(grads, grads_s):
+            if len(g.shape) == 2:
+                g_norm = tf.math.l2_normalize(g, axis=0)
+                gs_norm = tf.math.l2_normalize(gs, axis=0)
+                inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
+            if len(g.shape) == 4:
+                g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
+                gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
+                inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
+            dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
+
+        return dist_loss
+
+    @tf.function
+    def distill_step(self, mdl, x_ds, y_ds):
 
         with tf.GradientTape() as tape_w_s:
             with tf.GradientTape() as tape_c_s:
@@ -888,7 +945,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                     l = [idx * self.num_base, (idx + 1) * self.num_base]
                     base_image_c = self.base_image[idx * self.num_base: (idx + 1) * self.num_base]
                     syn_label_c = self.syn_label[self.num_stylers * idx * self.num_base: self.num_stylers * (idx + 1) * self.num_base]
-                    dist_loss += self.matching_loss(x_ds[idx], y_ds[idx], base_image_c, syn_label_c) / self.num_stylers
+                    dist_loss += self.matching_loss(mdl, x_ds[idx], y_ds[idx], base_image_c, syn_label_c) / self.num_stylers
 
                 # compute cosine similarity
                 twin_image = self.get_twin_image()
@@ -954,7 +1011,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
     
     def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, use_image_being_condensed=False, 
-                 current_data_proportion=0, verbose=False):
+                 current_data_proportion=0, verbose=False, old_model_probability=5):
 
         # Create and initialize synthetic data
         # num_base = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
@@ -977,14 +1034,25 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         for k in tqdm(range(self.K)):
             # Reinitialize model
             utils.reinitialize_model(self.mdl)
+            train_loss = 2.5
             for t in range(self.T):
+
+                old_model_flag = False
+                mdl = self.mdl
+                if c[0] != 0:
+                    dice = np.random.randint(old_model_probability)
+                    if dice == 0:
+                        index = np.random.randint(len(buf.old_models))
+                        mdl = buf.old_models[index]
+                        old_model_flag = True
+                    
                 x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
                 x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
                 x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
                 y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
+                    dist_loss, club_content_loss, loss = self.distill_step(mdl, [x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
                     wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
                             "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
                             "Distill/class {}/Grand_loss".format(self.class_label): loss})
@@ -1029,15 +1097,16 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                     y_comb = y_current_class # batch size of real data and synthetic data are both 256
 
                 #################################################################
-
-                for _ in range(self.IN):
-                    train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+                if not old_model_flag:
+                    for _ in range(self.IN):
+                        train_loss = self.train_step(x_comb, y_comb, mdl, self.train_opt)
                 loss_name = 'InnerLoop/Class ' + str(c)
                 wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
                 update_step += 1
 
-                # store some models for next task
-                buf.old_models.append(tf.keras.models.clone_model(self.mdl))
+                # store some models for next task (four model, can be treated as a hyperparameter later)
+            if self.K - k < 5:
+                buf.old_models_buffer.append(tf.keras.models.clone_model(self.mdl))
 
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
@@ -1058,12 +1127,13 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.styler_params_count = 0
 
         self.old_models = []
+        self.old_models_buffer = []
 
     def compress_add(self, ds, c, mdl, verbose=False, num_stylers=2, batch_size=128, train_learning_rate=0.01,
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
                      num_bases=10, K=10, T=10, I=10, IN=1, lambda_club_content=10, lambda_cls_content = 1, 
                      lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False, current_data_proportion=0,
-                     use_image_being_condensed=False):
+                     use_image_being_condensed=False, old_model_probability=5):
         
         # Create compressor
         fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
@@ -1075,12 +1145,13 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         print("Compressing class {} down to {} stylers and 2 * {} base images...".format(c, self.num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, 
                                      use_image_being_condensed=use_image_being_condensed, current_data_proportion=current_data_proportion, 
-                                     verbose=False)
+                                     verbose=False, old_model_probability=old_model_probability)
 
         self.get_storage(b_s, s_s)
         wandb.log({'image_params_count': self.image_params_count,
                    'styler_params_count': self.styler_params_count,
-                   'Total_params_count': self.styler_params_count + self.image_params_count})
+                   'old_model_params_count': self.old_model_params_count,
+                   'Total_params_count': self.styler_params_count + self.image_params_count + self.old_model_params_count})
 
         # Add compressed data to buffer
         for i in range(len(c)):
@@ -1099,6 +1170,9 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         self.buffer_box[0] = self.base_buffer
         self.buffer_box[1] = self.styler_buffer
         self.buffer_box[2] = self.label_buffer
+
+        self.old_models = self.old_models_buffer
+        self.old_models_buffer = []
 
     @staticmethod
     def compose_image(base_buffer, styler_buffer, cl, idx_base_image=None, idx_styler=None):
@@ -1125,6 +1199,10 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
             self.styler_params_count_exp += keras.utils.layer_utils.count_params(styler.trainable_weights)
         self.image_params_count += self.image_params_count_exp
         self.styler_params_count += self.styler_params_count_exp
+        self.old_model_params_count = 0
+        for old_model in self.old_models_buffer:
+            self.old_model_params_count += keras.utils.layer_utils.count_params(old_model.trainable_weights)
+
 
 
 class StyleTranslator(tf.keras.Model):
