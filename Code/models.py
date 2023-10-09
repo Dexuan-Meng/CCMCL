@@ -5,6 +5,7 @@ This file contains models.
 import tensorflow as tf
 import tensorflow_addons as tfa
 import keras
+from keras import layers
 import abc
 import numpy as np
 import wandb
@@ -12,7 +13,32 @@ from tqdm import tqdm
 import utils
 from utils import get_batch_size, sample_batch
 
-    
+
+def get_sequential_model(input_shape):
+
+    model = keras.Sequential(
+        [
+            keras.Input(shape=input_shape),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            tf.keras.layers.Flatten(),
+            layers.Dense(10, activation="softmax")
+        ]
+    )
+
+    return model
+
+
 class CNN(tf.keras.Model):
     """
     Simple and small CNN.
@@ -1054,7 +1080,13 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
                      use_image_being_condensed=False):
         
         # Create compressor
-        fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
+        if self.multistep:
+            fac = DualClassesFactorizationMultistepCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
+                                                 K, T, mdl, I=I, IN=IN, img_shape=img_shape, lambda_club_content=lambda_club_content, 
+                                                 lambda_cls_content = lambda_cls_content, lambda_likeli_content=lambda_likeli_content,
+                                                 lambda_contrast_content=lambda_contrast_content)
+        else:
+            fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
                                                  K, T, mdl, I=I, IN=IN, img_shape=img_shape, lambda_club_content=lambda_club_content, 
                                                  lambda_cls_content = lambda_cls_content, lambda_likeli_content=lambda_likeli_content,
                                                  lambda_contrast_content=lambda_contrast_content)
@@ -1249,16 +1281,52 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
     def __init__(self, datasets, class_labels, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate, K, T, mdl, 
                  I=10, IN=1, img_shape=(28, 28, 1), lambda_club_content= 10, lambda_cls_content = 1, lambda_likeli_content=1,
                  lambda_contrast_content=1):
-        super(DualClassesFactorizationMultistepCompressor, self).__init__(class_labels, batch_size, train_learning_rate, img_learning_rate, 
-                                                     styler_learning_rate, K, T, mdl, I, img_shape, lambda_club_content,
+        super(DualClassesFactorizationMultistepCompressor, self).__init__(datasets, class_labels, batch_size, train_learning_rate, img_learning_rate, 
+                                                     styler_learning_rate, K, T, mdl, I, IN, img_shape, lambda_club_content,
                                                      lambda_cls_content, lambda_likeli_content, lambda_contrast_content)
         self.ds_iter = {}
         self.IN = IN
         for c in class_labels:
             self.ds_iter[c] = datasets[c].as_numpy_iterator()
-    
+
     @tf.function
-    def distill_step(self, x_ds, y_ds):
+    def matching_loss(self, x, y, base_image, syn_label, model_real_ds, model_syn_ds):
+        
+        # # Minimize cosine similarity between gradients
+        # with tf.GradientTape() as inner_tape:
+        #     logits_x = model_real_ds(x, training=False)
+        #     loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
+        # grads = inner_tape.gradient(loss_x, model_real_ds.trainable_variables)
+
+        # # Make prediction using model
+        # with tf.GradientTape() as inner_tape:
+        #     comp = self.compose_image(base_image, self.stylers)
+        #     logits_s = model_syn_ds(comp, training=False)
+        #     loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(syn_label, logits_s, from_logits=True))
+        # grads_s = inner_tape.gradient(loss_s, model_syn_ds.trainable_variables)
+
+        # grads = tf.concat(self.model_weights_real)
+        # grads_s = tf.concat(self.model_weights_syn)
+        grads = self.model_weights_real
+        grads_s = self.model_weights_syn
+
+        # Compute matching loss
+        dist_loss = tf.constant(0.0, dtype=tf.float32)
+        for g, gs in zip(grads, grads_s):
+            if len(g.shape) == 2:
+                g_norm = tf.math.l2_normalize(g, axis=0)
+                gs_norm = tf.math.l2_normalize(gs, axis=0)
+                inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=0)
+            if len(g.shape) == 4:
+                g_norm = tf.math.l2_normalize(g, axis=(0, 1, 2))
+                gs_norm = tf.math.l2_normalize(gs, axis=(0, 1, 2))
+                inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
+            dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
+
+        return dist_loss * 160
+
+    @tf.function
+    def distill_step(self, x_ds, y_ds, model_real_ds, model_syn_ds):
 
         with tf.GradientTape() as tape_w_s:
             with tf.GradientTape() as tape_c_s:
@@ -1267,7 +1335,7 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
                 for idx in range(len(self.class_label)):
                     base_image_c = self.base_image[idx * self.num_base: (idx + 1) * self.num_base]
                     syn_label_c = self.syn_label[self.num_stylers * idx * self.num_base: self.num_stylers * (idx + 1) * self.num_base]
-                    dist_loss += self.matching_loss(x_ds[idx], y_ds[idx], base_image_c, syn_label_c) / self.num_stylers
+                    dist_loss += self.matching_loss(x_ds[idx], y_ds[idx], base_image_c, syn_label_c, model_real_ds, model_syn_ds) / self.num_stylers
 
                 # compute cosine similarity
                 twin_image = self.get_twin_image()
@@ -1347,7 +1415,11 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
             styler = StyleTranslator(in_channel=img_shape[2], mid_channel=3, out_channel=img_shape[2], image_size=img_shape, kernel_size=3)
             styler.build((None, img_shape[0], img_shape[1], img_shape[2]))
             self.stylers.append(styler)
-
+        reorder = np.array([])
+        for i in [0, 2, 1, 3]:
+            reorder = np.append(reorder, np.arange(10 * i, 10 * (i+1)))
+        reorder = np.array(reorder, dtype=int)
+        label = tf.gather(self.syn_label, reorder)
         # Preparation for log
         starting_step = int(self.K * self.T * self.I * c[0] * 0.5)
         distill_step = 0
@@ -1356,34 +1428,73 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
         for k in tqdm(range(self.K)):
             # Reinitialize model
             utils.reinitialize_model(self.mdl)
+            pretrain_step = np.random.randint(10)
+            for i in range(pretrain_step):
+                x_t, y_t = buf.sample(204)
+                x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
+                x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
+                x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
+                y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
+                if x_t is not None:
+                    x_ds, y_ds = sample_batch(x_ds, y_ds, 51)
+                    x_comb = tf.concat((x_ds, x_t), axis=0)
+                    y_comb = tf.concat((y_ds, y_t), axis=0)
+                else:
+                    x_ds, y_ds = sample_batch(x_ds, y_ds, 256)
+                    x_comb = x_ds
+                    y_comb = y_ds
+                _ = self.train_step(x_ds, y_ds, self.mdl, self.train_opt)
+
+            model_real_ds = tf.keras.models.clone_model(self.mdl)
+            model_syn_ds = tf.keras.models.clone_model(self.mdl)
             for t in range(self.T):
+                
+                model_real_ds.set_weights(self.mdl.get_weights())
+                self.model_weights_real = []
+                for _ in range(2):
+                    x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
+                    x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
+                    x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
+                    y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
+                    train_loss = self.train_step(x_ds, y_ds, model_real_ds, self.train_opt)
+
+                model_syn_ds.set_weights(self.mdl.get_weights())
+                self.model_weights_syn = []
+                for _ in range(10):
+                    comp = self.compose_image(self.base_image, self.stylers)
+                    train_loss = self.train_step(comp, label, model_syn_ds, self.train_opt)
+                    self.model_weights_real.extend(model_real_ds.trainable_weights)
+                    self.model_weights_syn.extend(model_syn_ds.trainable_weights)
+                # model_real_ds = self.mdl
+                # model_syn_ds = self.mdl
+
                 x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
                 x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
                 x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
                 y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
+                    dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1], model_real_ds, model_syn_ds)
+                    cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
+                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
                     wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
                             "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
-                            "Distill/class {}/Grand_loss".format(self.class_label): loss})
-                    if log_histogram:
-                        wandb.log({
-                            "Distill/class {}/Synthetic_Pixels".format(self.class_label):
-                            wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
-                            "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
-                            })
-                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                    cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
-                    wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
-                               "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
-                               "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
-                               "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
-                    
+                            "Distill/class {}/Grand_loss".format(self.class_label): loss,
+                            "Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
+                            "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
+                            "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
+                            "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
                     distill_step += 1
 
+
+                if log_histogram:
+                    wandb.log({
+                        "Distill/class {}/Synthetic_Pixels".format(self.class_label):
+                        wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
+                        "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
+                        })
+
                 # Perform innerloop training step
-                #################################################################
                 if c[0] == 0:
                     batch_size_previous_classes, batch_size_current_classes = 0, 256
                 else:
@@ -1407,13 +1518,73 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
                     x_comb = x_current_class # Compress at first, then train with real data or real+syn data.
                     y_comb = y_current_class # batch size of real data and synthetic data are both 256
 
-                #################################################################
 
                 for _ in range(self.IN):
                     train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
                 loss_name = 'InnerLoop/Class ' + str(c)
                 wandb.log({loss_name: train_loss, 'update_step_'+ str(c): update_step})
                 update_step += 1
+
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
         return self.base_image, self.stylers, self.syn_label
+    
+    def get_batch_from_ds_iter(self):
+
+        x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
+        x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
+
+        return tf.concat([x_ds_c0, x_ds_c1], 0), tf.concat([y_ds_c0, y_ds_c1], 0)
+    
+    @tf.function
+    def outerloop(self, x_ds, y_ds, x_ds_c0, x_ds_c1, y_ds_c0, y_ds_c1, comp, label, model_real_ds, model_syn_ds, distill_step):
+
+        for _ in range(1):
+        #     x_ds, y_ds = self.get_batch_from_ds_iter()
+            _ = self.train_step(x_ds, y_ds, model_real_ds, self.train_opt)
+        for _ in range(10):
+        #     comp = self.compose_image(self.base_image, self.stylers)
+            _ = self.train_step(comp, label, model_syn_ds, self.train_opt)
+
+        x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
+        y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
+        # Perform distillation step
+        for i in range(self.I): # one batch of dataset distills the components I iterations
+            dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1], model_real_ds, model_syn_ds)
+            cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
+            
+        distill_step += self.I
+        
+        return distill_step, x_ds, y_ds, dist_loss, club_content_loss, loss, cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss 
+
+    @tf.function
+    def innerloop(self, x_ds, y_ds, current_data_proportion, c, use_image_being_condensed, buf):
+
+        # Perform innerloop training step
+        if c[0] == 0:
+            batch_size_previous_classes, batch_size_current_classes = 0, 256
+        else:
+            batch_size_previous_classes, batch_size_current_classes = get_batch_size(self.batch_size, current_data_proportion, c)
+        
+        if not use_image_being_condensed:
+            x_current_class, y_current_class = sample_batch(x_ds, y_ds, batch_size_current_classes)
+        else:
+            syn_image_being_condensed = []
+            for idx in range(len(c)):
+                for styler in self.stylers:
+                    syn_image_being_condensed.append(styler(self.base_image[idx * self.num_base: (idx + 1) * self.num_base]))
+            syn_image_being_condensed = tf.concat(syn_image_being_condensed, axis=0)
+            x_current_class, y_current_class = sample_batch(syn_image_being_condensed, y_ds, batch_size_current_classes)
+
+        if batch_size_previous_classes != 0:
+            x_t, y_t = buf.sample(batch_size_previous_classes)
+            x_comb = tf.concat((x_current_class, x_t), axis=0)
+            y_comb = tf.concat((y_current_class, y_t), axis=0)
+        else:
+            x_comb = x_current_class # Compress at first, then train with real data or real+syn data.
+            y_comb = y_current_class # batch size of real data and synthetic data are both 256
+
+        for _ in range(self.IN):
+            train_loss = self.train_step(x_comb, y_comb, self.mdl, self.train_opt)
+        
+        return train_loss

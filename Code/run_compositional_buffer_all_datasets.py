@@ -13,6 +13,8 @@ import os
 import wandb
 import time
 from utils import make_grid
+from models import get_sequential_model
+import warnings
 
 def main(args):
     
@@ -42,7 +44,7 @@ def main(args):
     elif args.dataset not in ['MNIST', 'CIFAR10']:
         raise 'NotImplementedError'
     
-    if args.plugin != 'Factorization':
+    if args.plugin == 'Compositional' :
         args.DUAL_CLASSES = False
     
     ID = str(np.random.randint(999)).zfill(3)
@@ -54,7 +56,7 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Proportion Study: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Test: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -62,8 +64,7 @@ def main(args):
 
         start_time = time.time()
         # Instantiate model and trainer
-        model = models.CNN(10)
-        model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         # print(model.summary())
         if args.plugin == 'Compositional':
             buf = models.CompositionalBalancedBuffer()
@@ -83,6 +84,28 @@ def main(args):
                 buf = models.DualClassesFactorizationBuffer()
             else:
                 buf = models.FactorizationBalancedBuffer()
+
+            condensation_args = {
+                'num_stylers': args.num_stylers,
+                'batch_size': args.BATCH_SIZE,
+                'train_learning_rate': args.LEARNING_RATE,
+                'img_learning_rate': args.DIST_LEARNING_RATE,
+                'styler_learning_rate': args.styler_lr,
+                'img_shape': IMG_SHAPE,
+                'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
+                'K': args.K,
+                'T': args.T,
+                'I': args.I,
+                'IN': args.IN,
+                'lambda_club_content': args.lambda_club_content,
+                'lambda_likeli_content': args.lambda_likeli_content,
+                'lambda_cls_content': args.lambda_cls_content,
+                'lambda_contrast_content': args.lambda_contrast_content,
+                'log_histogram': args.log_histogram,
+                'current_data_proportion': args.current_data_proportion,
+                'use_image_being_condensed': args.use_image_being_condensed
+            }
+
         elif args.plugin == 'multistep':
             buf = models.DualClassesFactorizationBuffer(multistep=True)
             
@@ -233,6 +256,8 @@ def main(args):
 
 
 if __name__ == "__main__":
+    
+    warnings.simplefilter('ignore')
 
     utils.enable_gpu_mem_growth()
 
@@ -256,9 +281,9 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=10,
+    parser.add_argument('--ITERS', type=int, default=200,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=10,
+    parser.add_argument('--VAL_ITERS', type=int, default=200,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
@@ -266,32 +291,32 @@ if __name__ == "__main__":
                         help='whether to log histogram to wandb')
     parser.add_argument('--current_data_proportion', type=float, default=0.2,
                         help='proportion of data of current classes for updating model in innerloop')
-    parser.add_argument('--use_image_being_condensed', type=bool, default=True,
+    parser.add_argument('--use_image_being_condensed', type=bool, default=False,
                         help='whether to use image being condensed or real images as data of current \
                             classes while updating model in Innerloop')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
     parser.add_argument('--T', type=int, default=1,
                         help='number of outerloops')
-    parser.add_argument('--I', type=int, default=10,
+    parser.add_argument('--I', type=int, default=1,
                         help='number of image update within one outerloop')
     parser.add_argument('--IN', type=int, default=1,
                         help='number of image update within one outerloop')
 
     parser.add_argument('--lambda_club_content', type=float, default=10)
-    parser.add_argument('--lambda_contrast_content', type=float, default=10)
+    parser.add_argument('--lambda_contrast_content', type=float, default=1)
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
     parser.add_argument('--group', type=int, default=10)
 
-    parser.add_argument('--plugin', type=str, default='Factorization', 
+    parser.add_argument('--plugin', type=str, default='multistep', 
                         choices=['Compositional', 'Compressed', 'Factorization', 
                                  "multistep"],
                         help='method for condensation')
