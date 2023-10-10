@@ -5,12 +5,38 @@ This file contains models.
 import tensorflow as tf
 import tensorflow_addons as tfa
 import keras
+from keras import layers
 import abc
 import numpy as np
 import wandb
 from tqdm import tqdm
 import utils
 from utils import get_batch_size, sample_batch
+
+
+def get_sequential_model(input_shape):
+
+    model = keras.Sequential(
+        [
+            keras.Input(shape=input_shape),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            tf.keras.layers.Flatten(),
+            layers.Dense(10, activation="softmax")
+        ]
+    )
+
+    return model
 
     
 class CNN(tf.keras.Model):
