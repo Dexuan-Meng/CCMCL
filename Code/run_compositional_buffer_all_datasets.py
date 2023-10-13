@@ -271,7 +271,7 @@ if __name__ == "__main__":
                         help='number of groups in which all classes are divided')
     parser.add_argument('--BUFFER_SIZE', type=int, default=100,
                         help='total memory size')
-    parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
+    parser.add_argument('--LEARNING_RATE', type=float, default=0,
                         help='learning rate for training (updating networks)')
     parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
                         help='learning rate for distillation (updating images)')

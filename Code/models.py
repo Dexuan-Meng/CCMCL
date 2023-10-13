@@ -1289,6 +1289,11 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
         for c in class_labels:
             self.ds_iter[c] = datasets[c].as_numpy_iterator()
 
+        if train_learning_rate == 0:
+            self.learning_rate_opt = tf.keras.optimizers.SGD(1e-5, momentum=0.5)
+            self.net_lr = tf.Variable(initial_value=0.01, trainable=True)
+            self.net_opt = None
+
     @tf.function
     def matching_loss(self, x, y, base_image, syn_label, model_real_ds, model_syn_ds):
         
@@ -1323,7 +1328,7 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
                 inner = tf.reduce_sum(tf.multiply(g_norm, gs_norm), axis=(0, 1, 2))
             dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
 
-        return dist_loss * 160
+        return dist_loss * 100
 
     @tf.function
     def distill_step(self, x_ds, y_ds, model_real_ds, model_syn_ds):
@@ -1462,7 +1467,7 @@ class DualClassesFactorizationMultistepCompressor(DualClassesFactorizationCompre
                 self.model_weights_syn = []
                 for _ in range(10):
                     comp = self.compose_image(self.base_image, self.stylers)
-                    train_loss = self.train_step(comp, label, model_syn_ds, self.train_opt)
+                    train_loss = self.train_step(comp, label, model_syn_ds, self.net_opt)
                     self.model_weights_real.extend(model_real_ds.trainable_weights)
                     self.model_weights_syn.extend(model_syn_ds.trainable_weights)
                 # model_real_ds = self.mdl
