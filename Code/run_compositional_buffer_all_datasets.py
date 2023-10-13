@@ -55,7 +55,7 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Proportion Study: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Sigmoid Study: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -110,7 +110,7 @@ def main(args):
         train = utils.Trainer()
 
         # Instantiate optimizer
-        optimizer = tf.keras.optimizers.SGD(args.LEARNING_RATE)
+        optimizer = tf.keras.optimizers.SGD(args.VAL_LEARNING_RATE, momentum=args.VAL_MOMENTUM)
 
         # Train on sequence
         
@@ -180,7 +180,6 @@ def main(args):
                             if val_iters == args.VAL_BATCHES / 5:
                                 # Get metrics
                                 train_loss = m_train_loss.result()
-                                m_train_loss.reset_states()
                                 val_acc = m_val_acc.result()
                                 m_val_acc.reset_states()
                                 val_loss = m_val_loss.result()
@@ -194,6 +193,7 @@ def main(args):
                                 # Reset validation iterations
                                 val_iters = 0
                                 break
+
                         
                         val_acc_splitted[idx].append(val_acc)
                         val_acc_container.append(val_acc)
@@ -210,6 +210,8 @@ def main(args):
                     wandb.log({"Validation/Val_acc": np.mean(val_acc_container),
                                "Validation/Val_forgetting": 0 if t == 0 else np.sum(val_forgetting_container) / t,
                                "Validation/Task": t + 1})
+
+                m_train_loss.reset_states()
                     
 
         # Test model on complete data set
@@ -248,6 +250,10 @@ if __name__ == "__main__":
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
+    parser.add_argument('--VAL_LEARNING_RATE', type=float, default=0.05,
+                        help='learning rate for validation training (updating net)')
+    parser.add_argument('--VAL_MOMENTUM', type=float, default=0.0,
+                        help='Momentum for validation training (updating net)')
     parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
@@ -256,9 +262,9 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=10,
+    parser.add_argument('--ITERS', type=int, default=1000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=10,
+    parser.add_argument('--VAL_ITERS', type=int, default=1000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
@@ -271,13 +277,13 @@ if __name__ == "__main__":
                             classes while updating model in Innerloop')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=5,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=2, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=1,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
                         help='number of image update within one outerloop')
@@ -289,7 +295,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=22)
+    parser.add_argument('--group', type=int, default=27)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization'],
