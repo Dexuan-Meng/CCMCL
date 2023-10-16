@@ -65,7 +65,7 @@ def main(args):
         # Instantiate model and trainer
         # model = models.CNN(10)
         # model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
         # print(model.summary())
         if args.plugin == 'Compositional':
             buf = models.CompositionalBalancedBuffer()
@@ -250,9 +250,9 @@ if __name__ == "__main__":
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
-    parser.add_argument('--VAL_LEARNING_RATE', type=float, default=0.05,
+    parser.add_argument('--VAL_LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for validation training (updating net)')
-    parser.add_argument('--VAL_MOMENTUM', type=float, default=0.0,
+    parser.add_argument('--VAL_MOMENTUM', type=float, default=0.9,
                         help='Momentum for validation training (updating net)')
     parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
                         help='learning rate for distillation (updating images)')
@@ -275,6 +275,8 @@ if __name__ == "__main__":
     parser.add_argument('--use_image_being_condensed', type=bool, default=True,
                         help='whether to use image being condensed or real images as data of current \
                             classes while updating model in Innerloop')
+    parser.add_argument('--activation', type=str, default='tanh',
+                        help='activation function set at the last place')
 
     # Hyperparameters to be heavily tuned
     parser.add_argument('--RUNS', type=int, default=5,
@@ -295,7 +297,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=27)
+    parser.add_argument('--group', type=int, default=31)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization'],

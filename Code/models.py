@@ -14,7 +14,7 @@ import utils
 from utils import get_batch_size, sample_batch
 
 
-def get_sequential_model(input_shape):
+def get_sequential_model(input_shape, activation='sigmoid'):
 
     model = keras.Sequential(
         [
@@ -29,9 +29,8 @@ def get_sequential_model(input_shape):
             layers.AveragePooling2D(),
             layers.Conv2D(128, 3, activation="linear", padding="SAME"),
             tfa.layers.InstanceNormalization(),
-            # layers.Activation("relu"),
+            layers.Activation(activation),
             layers.AveragePooling2D(),
-            layers.Activation("sigmoid"),
             tf.keras.layers.Flatten(),
             layers.Dense(10, activation="softmax")
         ]
