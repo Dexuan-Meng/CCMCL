@@ -28,8 +28,9 @@ def get_sequential_model(input_shape, activation='sigmoid'):
             layers.Activation("relu"),
             layers.AveragePooling2D(),
             layers.Conv2D(128, 3, activation="linear", padding="SAME"),
-            tfa.layers.InstanceNormalization(),
             layers.Activation(activation),
+            tfa.layers.InstanceNormalization(),
+            # layers.Activation(activation),
             layers.AveragePooling2D(),
             tf.keras.layers.Flatten(),
             layers.Dense(10, activation="softmax")
@@ -1008,12 +1009,12 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                     wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
                             "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
                             "Distill/class {}/Grand_loss".format(self.class_label): loss})
-                    if log_histogram:
-                        wandb.log({
-                            "Distill/class {}/Synthetic_Pixels".format(self.class_label):
-                            wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
-                            "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
-                            })
+                    # if log_histogram:
+                    #     wandb.log({
+                    #         "Distill/class {}/Synthetic_Pixels".format(self.class_label):
+                    #         wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
+                    #         "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
+                    #         })
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
                     cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
                     wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
@@ -1057,6 +1058,20 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                 update_step += 1
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
+            with tf.GradientTape() as inner_tape:
+                logits_x = self.mdl(x_comb, training=False)
+                loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_comb, logits_x, from_logits=True))
+            grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
+            if log_histogram:
+                wandb.log({
+                    "Distill/class {}/Synthetic_Pixels".format(self.class_label):
+                    wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
+                    "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512),
+                    "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
+
+                    })
+                
+
         return self.base_image, self.stylers, self.syn_label
 
 

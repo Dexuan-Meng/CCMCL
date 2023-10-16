@@ -279,7 +279,7 @@ if __name__ == "__main__":
                         help='activation function set at the last place')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=5,
+    parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
@@ -297,7 +297,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=31)
+    parser.add_argument('--group', type=int, default=34)
 
     parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization'],
