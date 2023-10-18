@@ -8,25 +8,50 @@ import models
 import datasets
 import utils
 import numpy as np
+import wandb
+import time
+from tqdm import tqdm
 
 utils.enable_gpu_mem_growth()
 
 # Define constants
 BATCH_SIZE = 128
 ITERS = 1000
-VAL_ITERS = 10
+VAL_ITERS = 1000
 VAL_BATCHES = 10
 LEARNING_RATE = 0.01
 TASKS = 5
 CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
-BUFFER_SIZES = (100, 200, 300, 400, 500)
+BUFFER_SIZES = (100,)
 DIST_BATCH_SIZE = 256
 DIST_LEARNING_RATE = 0.01
 IMG_SHAPE = (32, 32, 3)
-K = 100
+K = 20
 T = 10
-RUNS = 5
-LOG_PATH = "../logs/CompositionalBuffer/CIFAR10"
+I = 10
+RUNS = 3
+activation = 'tanh'
+# LOG_PATH = "../logs/CompressedBuffer/CIFAR10"
+
+config = {
+    'BATCH_SIZE' : BATCH_SIZE,
+    'ITERS': ITERS,
+    'VAL_ITERS': VAL_ITERS,
+    'VAL_BATCHES': VAL_BATCHES,
+    'LEARNING_RATE': LEARNING_RATE,
+    'TASKS': TASKS,
+    'CLASSES': CLASSES,
+    'BUFFER_SIZE': 100,
+    'DIST_BATCH_SIZE': DIST_BATCH_SIZE,
+    'DIST_LEARNING_RATE': DIST_LEARNING_RATE,
+    'IMG_SHAPE': IMG_SHAPE,
+    'K': K,
+    'T': T,
+    'I': I,
+    'RUNS': RUNS,
+    'activation': activation
+}
+
 
 # Create array for storing results
 res_loss = np.zeros((RUNS, len(BUFFER_SIZES)), dtype=np.float)
@@ -34,9 +59,20 @@ res_acc = np.zeros((RUNS, len(BUFFER_SIZES)), dtype=np.float)
 
 for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
     for run in range(RUNS):
+
+        wandb.init(sync_tensorboard=False,
+                name="Test",
+                project="CCMCL",
+                job_type="CleanRepo",
+                config=config
+        )
+        start_time = time.time()
+
         # Instantiate model and trainer
-        model = models.CNN(10)
-        model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        # model = models.CNN(10)
+        # model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        
+        model = models.get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=activation)
         buf = models.CompositionalBalancedBuffer()
         train = utils.Trainer()
 
@@ -48,6 +84,8 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
         _, val_ds, test_ds = ds.get_all()
         val_ds = val_ds.cache().repeat().batch(BATCH_SIZE).map(utils.standardize)
         test_ds = test_ds.cache().batch(BATCH_SIZE).map(utils.standardize)
+
+        wandb.log({"Validation/Val_acc": 0, "Validation/Task": 0})
 
         # Train on sequence
         for t in range(TASKS):
@@ -64,19 +102,19 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
                 train_ds, _, _ = ds.get_split(c)
                 train_ds = train_ds.cache().repeat().shuffle(10000).batch(DIST_BATCH_SIZE).map(utils.standardize)
                 buf.compress_add(train_ds, c, DIST_BATCH_SIZE, LEARNING_RATE, DIST_LEARNING_RATE, IMG_SHAPE,
-                                 int(BUFFER_SIZE / len(CLASSES)), K, T, model)
+                                 int(BUFFER_SIZE / len(CLASSES)), K, T, I, model)
             buf.summary()
             # Training loop
             m_train_loss = tf.keras.metrics.Mean()
             m_val_acc = tf.keras.metrics.Accuracy()
             m_val_loss = tf.keras.metrics.Mean()
             utils.reinitialize_model(model)
-            for iters in range(ITERS):
+            for iters in tqdm(range(ITERS)):
                 # Sample a batch from the buffer and train
                 x_r, y_r = buf.sample(BATCH_SIZE)
                 current_loss = train.train_step(x_r, y_r, model, optimizer)
                 m_train_loss.update_state(current_loss)
-                if iters % VAL_ITERS == 0:
+                if iters % VAL_ITERS == VAL_ITERS - 1:
                     # Validation
                     val_iters = 0
                     for x, y in val_ds:
@@ -100,6 +138,8 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
                                                                                                                    val_acc))
                             # Reset validation iterations
                             val_iters = 0
+                            wandb.log({"Validation/Val_acc": val_acc, "Validation/Task": t + 1})
+
                             break
 
         # Test model on complete data set
@@ -113,15 +153,24 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
         test_loss = m_test_loss.result()
         test_acc = m_test_acc.result()
         print("Test Loss: {:.3} Test Accuracy {:.3}".format(test_loss, test_acc))
+
+        wandb.log({'Test/Loss': test_loss,
+                   'Test/Accuracy': test_acc})
+        
+        final_time_cost = time.time() - start_time
+        wandb.log({"Final Time Cost": final_time_cost})
+
         # Store result
         res_loss[run, i] = test_loss
         res_acc[run, i] = test_acc
 
+        wandb.finish()
+
     # Write results
-    print("Saving results to {}...".format(LOG_PATH))
-    np.save(LOG_PATH+"/acc.npy", res_acc)
-    np.savetxt(LOG_PATH+"/acc.log", res_acc, fmt="%.4f", delimiter=";", header="Buffer sizes: "+str(BUFFER_SIZES))
-    np.save(LOG_PATH+"/loss.npy", res_loss)
-    np.savetxt(LOG_PATH+"/loss.log", res_loss, fmt="%.4f", delimiter=";", header="Buffer sizes: "+str(BUFFER_SIZES))
-    np.save(LOG_PATH+"/w_"+str(BUFFER_SIZE)+".npy", buf.w_buffer)
-    np.save(LOG_PATH+"/c_"+str(BUFFER_SIZE)+".npy", buf.c_buffer)
+    # print("Saving results to {}...".format(LOG_PATH))
+    # np.save(LOG_PATH+"/acc.npy", res_acc)
+    # np.savetxt(LOG_PATH+"/acc.log", res_acc, fmt="%.4f", delimiter=";", header="Buffer sizes: "+str(BUFFER_SIZES))
+    # np.save(LOG_PATH+"/loss.npy", res_loss)
+    # np.savetxt(LOG_PATH+"/loss.log", res_loss, fmt="%.4f", delimiter=";", header="Buffer sizes: "+str(BUFFER_SIZES))
+    # np.save(LOG_PATH+"/w_"+str(BUFFER_SIZE)+".npy", buf.w_buffer)
+    # np.save(LOG_PATH+"/c_"+str(BUFFER_SIZE)+".npy", buf.c_buffer)

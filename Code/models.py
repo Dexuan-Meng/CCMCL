@@ -4,13 +4,40 @@ This file contains models.
 
 import tensorflow as tf
 import tensorflow_addons as tfa
+import keras
+from keras import layers
 import utils
 import abc
 import numpy as np
 import wandb
 from tqdm import tqdm
-    
-    
+
+
+def get_sequential_model(input_shape, activation='sigmoid'):
+
+    model = keras.Sequential(
+        [
+            keras.Input(shape=input_shape),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation("relu"),
+            layers.AveragePooling2D(),
+            layers.Conv2D(128, 3, activation="linear", padding="SAME"),
+            tfa.layers.InstanceNormalization(),
+            layers.Activation(activation),
+            layers.AveragePooling2D(),
+            tf.keras.layers.Flatten(),
+            layers.Dense(10, activation="softmax")
+        ]
+    )
+
+    return model
+
+
 class CNN(tf.keras.Model):
     """
     Simple and small CNN.
@@ -419,6 +446,9 @@ class CompositionalBalancedBuffer(object):
         self.w_buffer = []
         self.y_buffer = []
         super(CompositionalBalancedBuffer, self).__init__()
+        
+        self.syn_images = None # all synthetic images in one tf Tensor
+        self.syn_labels = None # all labels for synthetic images in one tf Tensor
 
     def compress_add(self, ds, c, batch_size, train_learning_rate, dist_learning_rate, img_shape, num_synth, K, T, I, mdl, verbose=False):
         # Create compressor
@@ -433,21 +463,53 @@ class CompositionalBalancedBuffer(object):
         self.w_buffer.append(w_s)
         self.y_buffer.append(y_s)
 
-    def sample(self, k):
+        syn_images_c = self.compose_image(self.c_buffer, self.w_buffer, c) # synthetic images of last class
+        if self.syn_images == None:
+            self.syn_images = syn_images_c
+            self.syn_labels = y_s
+        else:
+            self.syn_images = tf.concat([self.syn_images, syn_images_c], axis=0)
+            self.syn_labels = tf.concat([self.syn_labels, y_s], axis=0)
+
+    # def sample(self, k):
+    #     # Randomly select and return k examples with their labels from the buffer
+    #     num_classes = len(self.w_buffer)
+    #     if num_classes > 0:
+    #         data = np.zeros((k, self.c_buffer[0].shape[1], self.c_buffer[0].shape[2], self.c_buffer[0].shape[3]), dtype=np.single)
+    #         labels = np.zeros((k, self.y_buffer[0].shape[1]), dtype=np.single)
+    #         for i in range(k):
+    #             # Sample class
+    #             cl = np.squeeze(np.random.randint(0, num_classes, 1))
+    #             # Sample instance
+    #             idx = np.squeeze(np.random.randint(0, self.w_buffer[cl].shape[0]))
+    #             # Compose image
+    #             comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
+    #             data[i] = comp
+    #             labels[i] = self.y_buffer[cl][idx]
+    #         return data, labels
+    #     else:
+    #         return None, None
+
+    @staticmethod
+    def compose_image(c_buffer, w_buffer, cl, idx=None):
+        if idx is None:
+            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
+        else:
+            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl][idx], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
+        return comp
+
+    def sample(self, batch_size):
         # Randomly select and return k examples with their labels from the buffer
         num_classes = len(self.w_buffer)
         if num_classes > 0:
-            data = np.zeros((k, self.c_buffer[0].shape[1], self.c_buffer[0].shape[2], self.c_buffer[0].shape[3]), dtype=np.single)
-            labels = np.zeros((k, self.y_buffer[0].shape[1]), dtype=np.single)
-            for i in range(k):
-                # Sample class
-                cl = np.squeeze(np.random.randint(0, num_classes, 1))
-                # Sample instance
-                idx = np.squeeze(np.random.randint(0, self.w_buffer[cl].shape[0]))
-                # Compose image
-                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
-                data[i] = comp
-                labels[i] = self.y_buffer[cl][idx]
+            data = np.zeros((batch_size, tf.shape(self.c_buffer[0])[1], tf.shape(self.c_buffer[0])[2], tf.shape(self.c_buffer[0])[3]), dtype=np.single)
+            labels = np.zeros((batch_size, tf.shape(self.y_buffer[0])[1]), dtype=np.single)
+            
+            indices = np.random.permutation(tf.shape(self.w_buffer[0])[0].numpy() * tf.shape(self.c_buffer[0])[0].numpy() * 10) # Max number of self.syn_images
+            indices = list(indices[:batch_size] % tf.shape(self.syn_images)[0,].numpy())
+            data = tf.gather(self.syn_images, indices).numpy()
+            labels = tf.gather(self.syn_labels, indices).numpy()
+
             return data, labels
         else:
             return None, None
