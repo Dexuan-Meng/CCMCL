@@ -30,7 +30,7 @@ K = 20
 T = 10
 I = 10
 RUNS = 3
-activation = 'tanh'
+activation = 'sigmoid'
 # LOG_PATH = "../logs/CompressedBuffer/CIFAR10"
 
 config = {
