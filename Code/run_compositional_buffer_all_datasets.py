@@ -50,36 +50,41 @@ def main(args):
 
     for run in range(args.RUNS):
 
-        
         val_acc_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Sigmoid Study: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Test new buffer with new compressor: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
         )
-
         start_time = time.time()
+
         # Instantiate model and trainer
         # model = models.CNN(10)
         # model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
-        # print(model.summary())
-        if args.plugin == 'Compositional':
-            buf = models.CompositionalBalancedBuffer()
+        val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
+
+        # Instantiate buffer
+        if 'Compositional' in args.plugin:
             condensation_args = {
                 'batch_size': args.BATCH_SIZE,
                 'train_learning_rate': args.LEARNING_RATE,
                 'dist_learning_rate': args.DIST_LEARNING_RATE,
                 'img_shape': IMG_SHAPE,
-                'num_synth': int(args.BUFFER_SIZE / len(CLASSES)),
+                'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
                 'K': args.K,
                 'T': args.T,
                 'I': args.I,
                 'log_histogram': args.log_histogram
             }
+            if args.plugin == 'Compositional':
+                buf = models.CompositionalBalancedBuffer()
+            elif args.plugin == 'NewCompositional':
+                buf = models.NewCompositionalBalancedBuffer()
+
         elif args.plugin == 'Factorization':
             if args.DUAL_CLASSES:
                 buf = models.DualClassesFactorizationBuffer()
@@ -107,15 +112,12 @@ def main(args):
                 'use_image_being_condensed': args.use_image_being_condensed
             }
 
+        # Instantiate trainer and optimizer
         train = utils.Trainer()
-
-        # Instantiate optimizer
         optimizer = tf.keras.optimizers.SGD(args.VAL_LEARNING_RATE, momentum=args.VAL_MOMENTUM)
 
         # Train on sequence
-        
         wandb.log({"Validation/Val_acc": 0, "Validation/Task": 0})
-
 
         for t in range(args.TASKS):
 
@@ -157,11 +159,11 @@ def main(args):
             m_train_loss = tf.keras.metrics.Mean()
             m_val_acc = tf.keras.metrics.Accuracy()
             m_val_loss = tf.keras.metrics.Mean()
-            utils.reinitialize_model(model)
+            utils.reinitialize_model(val_model)
             for iters in range(args.ITERS):
                 # Sample a batch from the buffer and train
                 x_r, y_r = buf.sample(args.BATCH_SIZE)
-                current_loss = train.train_step(x_r, y_r, model, optimizer)
+                current_loss = train.train_step(x_r, y_r, val_model, optimizer)
                 wandb.log({"Validation/train_loss": current_loss, "Validation/train_iters": t * args.ITERS + iters})
                 m_train_loss.update_state(current_loss)
 
@@ -173,7 +175,7 @@ def main(args):
                         val_iters = 0
                         for x, y in val_ds:
                             val_iters += 1
-                            logits = model(x, training=False)
+                            logits = val_model(x, training=False)
                             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
                             m_val_loss.update_state(current_loss)
                             m_val_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
@@ -218,7 +220,7 @@ def main(args):
         m_test_acc = tf.keras.metrics.Accuracy()
         m_test_loss = tf.keras.metrics.Mean()
         for x, y in test_ds:
-            logits = model(x, training=False)
+            logits = val_model(x, training=False)
             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
             m_test_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
             m_test_loss.update_state(current_loss)
@@ -254,7 +256,7 @@ if __name__ == "__main__":
                         help='learning rate for validation training (updating net)')
     parser.add_argument('--VAL_MOMENTUM', type=float, default=0.9,
                         help='Momentum for validation training (updating net)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
@@ -275,11 +277,11 @@ if __name__ == "__main__":
     parser.add_argument('--use_image_being_condensed', type=bool, default=True,
                         help='whether to use image being condensed or real images as data of current \
                             classes while updating model in Innerloop')
-    parser.add_argument('--activation', type=str, default='tanh',
+    parser.add_argument('--activation', type=str, default='relu',
                         help='activation function set at the last place')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
@@ -288,19 +290,19 @@ if __name__ == "__main__":
     parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
     parser.add_argument('--I', type=int, default=10,
-                        help='number of image update within one outerloop')
+                        help='number of update within one outerloop')
     parser.add_argument('--IN', type=int, default=1,
-                        help='number of image update within one outerloop')
+                        help='number of update for innerloop')
 
     parser.add_argument('--lambda_club_content', type=float, default=10)
     parser.add_argument('--lambda_contrast_content', type=float, default=10)
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=34)
+    parser.add_argument('--group', type=int, default=7)
 
-    parser.add_argument('--plugin', type=str, default='Factorization', 
-                        choices=['Compositional', 'Compressed', 'Factorization'],
+    parser.add_argument('--plugin', type=str, default='Compositional', 
+                        choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
                         help='method for condensation')
 
     args = parser.parse_args()
