@@ -30,7 +30,8 @@ K = 20
 T = 10
 I = 10
 RUNS = 3
-activation = 'sigmoid'
+activation = 'relu'
+group = 8
 # LOG_PATH = "../logs/CompressedBuffer/CIFAR10"
 
 config = {
@@ -49,7 +50,9 @@ config = {
     'T': T,
     'I': I,
     'RUNS': RUNS,
-    'activation': activation
+    'activation': activation,
+    'plugin': 'CCMCL',
+    'group': group
 }
 
 
