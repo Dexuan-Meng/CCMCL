@@ -54,7 +54,7 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Test new buffer with new compressor: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Sigmoid Study: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -62,10 +62,12 @@ def main(args):
         start_time = time.time()
 
         # Instantiate model and trainer
-        # model = models.CNN(10)
-        # model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
-        val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
+        model = models.CNN(10)
+        model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        val_model = models.CNN(10)
+        val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        # model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
+        # val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
 
         # Instantiate buffer
         if 'Compositional' in args.plugin:
@@ -109,7 +111,8 @@ def main(args):
                 'lambda_contrast_content': args.lambda_contrast_content,
                 'log_histogram': args.log_histogram,
                 'current_data_proportion': args.current_data_proportion,
-                'use_image_being_condensed': args.use_image_being_condensed
+                'use_image_being_condensed': args.use_image_being_condensed,
+                'shuffle_batch': args.shuffle_batch
             }
 
         # Instantiate trainer and optimizer
@@ -136,14 +139,14 @@ def main(args):
                 for c in classes:
                     # Load training data set
                     train_ds, _, _ = ds.get_split(c)
-                    dual_train_datasets[c] = train_ds.cache().repeat().shuffle(10000).batch(args.BATCH_SIZE).map(utils.standardize)
+                    dual_train_datasets[c] = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
                 buf.compress_add(dual_train_datasets, classes, model, **condensation_args)
                 buf.summary()
             else:
                 for c in classes:
                     # Load training data set
                     train_ds, _, _ = ds.get_split(c)
-                    train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.BATCH_SIZE).map(utils.standardize)
+                    train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
                     buf.compress_add(train_ds, c, model, **condensation_args)
                 buf.summary()
 
@@ -242,7 +245,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--DUAL_CLASSES', type=bool, default=True,
+    parser.add_argument('--DUAL_CLASSES', default=True, action='store_false',
                         help='whether compressing data of two classes at a time')
     parser.add_argument('--dataset', type=str, default='CIFAR10',
                         choices=['MNIST', 'CIFAR10', 'FashionMNIST', 'SVHN'])
@@ -254,9 +257,9 @@ if __name__ == "__main__":
                         help='learning rate for training (updating networks)')
     parser.add_argument('--VAL_LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for validation training (updating net)')
-    parser.add_argument('--VAL_MOMENTUM', type=float, default=0.9,
+    parser.add_argument('--VAL_MOMENTUM', type=float, default=0,
                         help='Momentum for validation training (updating net)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
@@ -270,13 +273,15 @@ if __name__ == "__main__":
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
-    parser.add_argument('--log_histogram', type=bool, default=False,
+    parser.add_argument('--log_histogram', default=True, action='store_true',
                         help='whether to log histogram to wandb')
     parser.add_argument('--current_data_proportion', type=float, default=0.2,
                         help='proportion of data of current classes for updating model in innerloop')
-    parser.add_argument('--use_image_being_condensed', type=bool, default=True,
+    parser.add_argument('--use_image_being_condensed', default=True, action='store_false',
                         help='whether to use image being condensed or real images as data of current \
                             classes while updating model in Innerloop')
+    parser.add_argument('--shuffle_batch', default=False, action='store_false',
+                        help='whether to shuffle the batch composed of two single-class dataset')
     parser.add_argument('--activation', type=str, default='relu',
                         help='activation function set at the last place')
 
@@ -299,9 +304,9 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=7)
+    parser.add_argument('--group', type=int, default=50)
 
-    parser.add_argument('--plugin', type=str, default='Compositional', 
+    parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
                         help='method for condensation')
 

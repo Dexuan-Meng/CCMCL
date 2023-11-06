@@ -976,7 +976,7 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
         return cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss
     
     def compress(self, c, img_shape, num_stylers, num_base, buf=None, log_histogram=False, use_image_being_condensed=False, 
-                 current_data_proportion=0, verbose=False):
+                 current_data_proportion=0, shuffle_batch=True, verbose=False):
 
         # Create and initialize synthetic data
         # num_base = num_components = int(BUFFER_SIZE / len(CLASSES)) = 10
@@ -1002,28 +1002,28 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
             for t in range(self.T):
                 x_ds_c0, y_ds_c0 = next(self.ds_iter[self.class_label[0]])
                 x_ds_c1, y_ds_c1 = next(self.ds_iter[self.class_label[1]])
-                x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
-                y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
+                if shuffle_batch:
+                    seed = np.random.randint(1000)
+                    x_ds = tf.random.shuffle(tf.concat([x_ds_c0, x_ds_c1], 0), seed=seed)
+                    y_ds = tf.random.shuffle(tf.concat([y_ds_c0, y_ds_c1], 0), seed=seed)
+                else:
+                    x_ds = tf.concat([x_ds_c0, x_ds_c1], 0)
+                    y_ds = tf.concat([y_ds_c0, y_ds_c1], 0)
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss, club_content_loss, loss = self.distill_step([x_ds_c0, x_ds_c1], [y_ds_c0, y_ds_c1])
                     wandb.log({"Distill/class {}/Matching_loss".format(self.class_label): dist_loss,
                             "Distill/class {}/Club_content_loss".format(self.class_label): club_content_loss,
                             "Distill/class {}/Grand_loss".format(self.class_label): loss})
-                    # if log_histogram:
-                    #     wandb.log({
-                    #         "Distill/class {}/Synthetic_Pixels".format(self.class_label):
-                    #         wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
-                    #         "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
-                    #         })
-                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
                     cls_content_loss, likeli_content_loss, contrast_content_loss, sim_content_loss = self.update_extractor(x_ds, y_ds)
                     wandb.log({"Distill/class {}/Cls_content_loss".format(self.class_label): cls_content_loss,
                                "Distill/class {}/Likeli_content_loss".format(self.class_label): likeli_content_loss,
                                "Distill/class {}/Contrast_content_loss".format(self.class_label): contrast_content_loss,
                                "Distill/class {}/Sim_content_loss".format(self.class_label): sim_content_loss})
-                    
                     distill_step += 1
+
+                wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+
 
                 # Perform innerloop training step
                 #################################################################
@@ -1059,17 +1059,13 @@ class DualClassesFactorizationCompressor(FactorizationCompressor):
                 update_step += 1
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
-            with tf.GradientTape() as inner_tape:
-                logits_x = self.mdl(x_comb, training=False)
-                loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_comb, logits_x, from_logits=True))
-            grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
+
             if log_histogram:
                 wandb.log({
                     "Distill/class {}/Synthetic_Pixels".format(self.class_label):
                     wandb.Histogram(tf.concat([self.stylers[0](self.base_image), self.stylers[1](self.base_image)], axis=0), num_bins=512),
                     "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512),
                     "Distill/class {}/Base_Pixels".format(self.class_label): wandb.Histogram(self.base_image, num_bins=512)
-
                     })
                 
 
@@ -1093,7 +1089,7 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
                      img_learning_rate=0.01, styler_learning_rate=0.01, img_shape=(28, 28, 1), 
                      num_bases=10, K=10, T=10, I=10, IN=1, lambda_club_content=10, lambda_cls_content = 1, 
                      lambda_likeli_content=1, lambda_contrast_content=1, log_histogram=False, current_data_proportion=0,
-                     use_image_being_condensed=False):
+                     use_image_being_condensed=False, shuffle_batch=True):
         
         # Create compressor
         fac = DualClassesFactorizationCompressor(ds, c, batch_size, train_learning_rate, img_learning_rate, styler_learning_rate,
@@ -1105,7 +1101,7 @@ class DualClassesFactorizationBuffer(FactorizationBalancedBuffer):
         print("Compressing class {} down to {} stylers and 2 * {} base images...".format(c, self.num_stylers, num_bases))
         b_s, s_s, y_s = fac.compress(c, img_shape, num_stylers, num_bases, self, log_histogram=log_histogram, 
                                      use_image_being_condensed=use_image_being_condensed, current_data_proportion=current_data_proportion, 
-                                     verbose=False)
+                                     shuffle_batch=shuffle_batch, verbose=False)
 
         self.get_storage(b_s, s_s)
         wandb.log({'image_params_count': self.image_params_count,
