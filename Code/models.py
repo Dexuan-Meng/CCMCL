@@ -280,15 +280,6 @@ class CompositionalCompressor(DataCompressor):
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
-                    # Test how the x_t and y_t looks like.
-                    s = []
-                    for i in x_t:
-                        flag = 0
-                        for j in s:
-                            if tf.math.equal(i, j).numpy().all():
-                                flag = 1
-                        if flag == 0:
-                            s.append(i)
                     # They are 256 batch, but oversampled from a 20 buffer.
                     x_comb = tf.concat((x_ds, x_t), axis=0)
                     y_comb = tf.concat((y_ds, y_t), axis=0)
