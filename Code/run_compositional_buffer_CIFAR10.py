@@ -31,7 +31,7 @@ T = 10
 I = 10
 RUNS = 3
 activation = 'relu'
-group = 0
+group = 1
 # LOG_PATH = "../logs/CompressedBuffer/CIFAR10"
 
 config = {
@@ -78,9 +78,9 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
         # Instantiate model and trainer
         model = models.CNN(10)
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        val_model = models.CNN(10)
-        val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        
+        # val_model = models.CNN(10)
+        # val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+
         # model = models.get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=activation)
         # val_model = models.get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
         buf = models.CompositionalBalancedBuffer()
@@ -118,18 +118,18 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
             m_train_loss = tf.keras.metrics.Mean()
             m_val_acc = tf.keras.metrics.Accuracy()
             m_val_loss = tf.keras.metrics.Mean()
-            utils.reinitialize_model(val_model)
+            utils.reinitialize_model(model)
             for iters in tqdm(range(ITERS)):
                 # Sample a batch from the buffer and train
                 x_r, y_r = buf.sample(BATCH_SIZE)
-                current_loss = train.train_step(x_r, y_r, val_model, optimizer)
+                current_loss = train.train_step(x_r, y_r, model, optimizer)
                 m_train_loss.update_state(current_loss)
                 if iters % VAL_ITERS == VAL_ITERS - 1:
                     # Validation
                     val_iters = 0
                     for x, y in val_ds:
                         val_iters += 1
-                        logits = val_model(x, training=False)
+                        logits = model(x, training=False)
                         current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
                         m_val_loss.update_state(current_loss)
                         m_val_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
@@ -156,7 +156,7 @@ for i, BUFFER_SIZE in enumerate(BUFFER_SIZES):
         m_test_acc = tf.keras.metrics.Accuracy()
         m_test_loss = tf.keras.metrics.Mean()
         for x, y in test_ds:
-            logits = val_model(x, training=False)
+            logits = model(x, training=False)
             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
             m_test_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
             m_test_loss.update_state(current_loss)
