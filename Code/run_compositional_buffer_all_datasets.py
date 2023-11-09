@@ -64,8 +64,8 @@ def main(args):
         # Instantiate model and trainer
         model = models.CNN(10)
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        val_model = models.CNN(10)
-        val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        # val_model = models.CNN(10)
+        # val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         # model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
         # val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
 
@@ -162,11 +162,11 @@ def main(args):
             m_train_loss = tf.keras.metrics.Mean()
             m_val_acc = tf.keras.metrics.Accuracy()
             m_val_loss = tf.keras.metrics.Mean()
-            utils.reinitialize_model(val_model)
+            utils.reinitialize_model(model)
             for iters in range(args.ITERS):
                 # Sample a batch from the buffer and train
                 x_r, y_r = buf.sample(args.BATCH_SIZE)
-                current_loss = train.train_step(x_r, y_r, val_model, optimizer)
+                current_loss = train.train_step(x_r, y_r, model, optimizer)
                 wandb.log({"Validation/train_loss": current_loss, "Validation/train_iters": t * args.ITERS + iters})
                 m_train_loss.update_state(current_loss)
 
@@ -178,7 +178,7 @@ def main(args):
                         val_iters = 0
                         for x, y in val_ds:
                             val_iters += 1
-                            logits = val_model(x, training=False)
+                            logits = model(x, training=False)
                             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
                             m_val_loss.update_state(current_loss)
                             m_val_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
@@ -223,7 +223,7 @@ def main(args):
         m_test_acc = tf.keras.metrics.Accuracy()
         m_test_loss = tf.keras.metrics.Mean()
         for x, y in test_ds:
-            logits = val_model(x, training=False)
+            logits = model(x, training=False)
             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
             m_test_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
             m_test_loss.update_state(current_loss)
@@ -286,7 +286,7 @@ if __name__ == "__main__":
                         help='activation function set at the last place')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=5,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
@@ -304,9 +304,9 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=50)
+    parser.add_argument('--group', type=int, default=3)
 
-    parser.add_argument('--plugin', type=str, default='Factorization', 
+    parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
                         help='method for condensation')
 
