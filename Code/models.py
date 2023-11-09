@@ -543,6 +543,9 @@ class CompositionalBalancedBuffer(object):
         self.image_params_count = 0
         self.weight_params_count = 0
 
+        self.syn_images = None # all synthetic images in one tf Tensor
+        self.syn_labels = None # all labels for synthetic images in one tf Tensor
+
         super(CompositionalBalancedBuffer, self).__init__()
 
     def compress_add(self, ds, c, mdl, batch_size=128, train_learning_rate=0.01, dist_learning_rate=0.05, 
@@ -571,6 +574,14 @@ class CompositionalBalancedBuffer(object):
         self.buffer_box[1] = self.w_buffer
         self.buffer_box[2] = self.y_buffer
 
+        syn_images_c = self.compose_image(self.c_buffer, self.w_buffer, c) # synthetic images of last class
+        if self.syn_images == None:
+            self.syn_images = syn_images_c
+            self.syn_labels = y_s
+        else:
+            self.syn_images = tf.concat([self.syn_images, syn_images_c], axis=0)
+            self.syn_labels = tf.concat([self.syn_labels, y_s], axis=0)
+
     @staticmethod
     def compose_image(c_buffer, w_buffer, cl, idx=None):
         if idx is None:
@@ -579,7 +590,7 @@ class CompositionalBalancedBuffer(object):
             comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl][idx], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
         return comp
 
-    def sample(self, k):
+    def sample_old(self, k):
         # Randomly select and return k examples with their labels from the buffer
         num_classes = len(self.w_buffer)
         if num_classes > 0:
@@ -595,6 +606,22 @@ class CompositionalBalancedBuffer(object):
                 # comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(self.w_buffer[cl][idx], tf.expand_dims(self.c_buffer[cl], axis=0)), axis=1))
                 data[i] = comp
                 labels[i] = self.y_buffer[cl][idx]
+            return data, labels
+        else:
+            return None, None
+    
+    def sample(self, batch_size):
+        # Randomly select and return k examples with their labels from the buffer
+        num_classes = len(self.w_buffer)
+        if num_classes > 0:
+            data = np.zeros((batch_size, tf.shape(self.c_buffer[0])[1], tf.shape(self.c_buffer[0])[2], tf.shape(self.c_buffer[0])[3]), dtype=np.single)
+            labels = np.zeros((batch_size, tf.shape(self.y_buffer[0])[1]), dtype=np.single)
+            
+            indices = np.random.permutation(tf.shape(self.w_buffer[0])[0].numpy() * tf.shape(self.c_buffer[0])[0].numpy() * 10) # Max number of self.syn_images
+            indices = list(indices[:batch_size] % tf.shape(self.syn_images)[0,].numpy())
+            data = tf.gather(self.syn_images, indices).numpy()
+            labels = tf.gather(self.syn_labels, indices).numpy()
+
             return data, labels
         else:
             return None, None
