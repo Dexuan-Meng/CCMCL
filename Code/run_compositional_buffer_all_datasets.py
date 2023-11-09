@@ -286,7 +286,7 @@ if __name__ == "__main__":
                         help='activation function set at the last place')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=5,
+    parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
