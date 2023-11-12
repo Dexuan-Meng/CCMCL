@@ -21,15 +21,13 @@ def get_sequential_model(input_shape, activation='sigmoid'):
             keras.Input(shape=input_shape),
             layers.Conv2D(128, 3, activation="linear", padding="SAME"),
             tfa.layers.InstanceNormalization(),
-            layers.Activation("relu"),
             layers.AveragePooling2D(),
             layers.Conv2D(128, 3, activation="linear", padding="SAME"),
             tfa.layers.InstanceNormalization(),
-            layers.Activation("relu"),
             layers.AveragePooling2D(),
             layers.Conv2D(128, 3, activation="linear", padding="SAME"),
-            layers.Activation(activation),
             tfa.layers.InstanceNormalization(),
+            layers.activations(activation),
             layers.AveragePooling2D(),
             tf.keras.layers.Flatten(),
             layers.Dense(10, activation="softmax")
@@ -44,9 +42,13 @@ class CNN(tf.keras.Model):
     Simple and small CNN.
     """
 
-    def __init__(self, n):
+    def __init__(self, n, activation_0, activation_1, activation_2):
         super(CNN, self).__init__()
         self.n = n
+        self.activation_fn_0 = activation_0
+        self.activation_fn_1 = activation_1
+        self.activation_fn_2 = activation_2
+        self.activation_layer = None
         self.relu = None
         self.conv0 = None
         self.norm0 = None
@@ -59,13 +61,30 @@ class CNN(tf.keras.Model):
         self.dense = None
 
     def build(self, input_shape):
-        self.relu = tf.keras.layers.Activation("relu")
+
+        # Adjustable activations function
+        if self.activation_fn_0 == None:
+            self.activation_layer_0 = tf.keras.layers.Identity()
+        else:
+            self.activation_layer_0 = tf.keras.layers.Activation(self.activation_fn_0)
+
+        if self.activation_fn_1 == None:
+            self.activation_layer_1 = tf.keras.layers.Identity()
+        else:
+            self.activation_laye_1r = tf.keras.layers.Activation(self.activation_fn_1)
+
+        if self.activation_fn_2 == None:
+            self.activation_layer_2 = tf.keras.layers.Identity()
+        else:
+            self.activation_layer_2 = tf.keras.layers.Activation(self.activation_fn_2)
+
         self.conv0 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
         self.norm0 = tfa.layers.InstanceNormalization()
         self.conv1 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
         self.norm1 = tfa.layers.InstanceNormalization()
         self.conv2 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
         self.norm2 = tfa.layers.InstanceNormalization()
+
         self.pool = tf.keras.layers.AveragePooling2D()
         self.flatten = tf.keras.layers.Flatten()
         self.dense = tf.keras.layers.Dense(self.n, activation="linear")
@@ -74,15 +93,15 @@ class CNN(tf.keras.Model):
     def call(self, inputs, training=None):
         output = self.conv0(inputs)
         output = self.norm0(output)
-        output = self.relu(output)
+        output = self.activation_layer_0(output)
         output = self.pool(output)
         output = self.conv1(output)
         output = self.norm1(output)
-        output = self.relu(output)
+        output = self.activation_layer_1(output)
         output = self.pool(output)
         output = self.conv2(output)
         output = self.norm2(output)
-        output = self.relu(output)
+        output = self.activation_layer_2(output)
         output = self.pool(output)
         output = self.flatten(output)
         output = self.dense(output)
@@ -501,12 +520,6 @@ class CompositionalCompressor(DataCompressor):
                 for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
                     wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                    if log_histogram:
-                        wandb.log({
-                            "Distill/class {}/Synthetic_Pixels".format(c):
-                            wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
-                            "Distill/class {}/Base_Pixels".format(c): wandb.Histogram(c_s, num_bins=512)
-                            })
                     distill_step += 1
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
@@ -524,6 +537,12 @@ class CompositionalCompressor(DataCompressor):
                 # Training is still necessary for the verbose.
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
+            if log_histogram:
+                wandb.log({
+                    "Distill/class {}/Synthetic_Pixels".format(c):
+                    wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
+                    "Distill/class {}/Base_Pixels".format(c): wandb.Histogram(c_s, num_bins=512)
+                    })
         return c_s, w_s, y_s
 
 

@@ -19,29 +19,6 @@ def main(args):
     
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
     task_classes = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]]
-
-    # Load data set
-    if args.dataset == 'MNIST':
-        ds = datasets.SplitMNIST(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
-        _, _, test_ds = ds.get_all()
-        val_ds_splitted = []
-        for classes in task_classes:
-            _, val_ds, _ = ds.get_split(classes)
-            val_ds_splitted.append(val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
-        test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
-        IMG_SHAPE = (28, 28, 1)
-    elif args.dataset == 'CIFAR10':
-        ds = datasets.SplitCIFAR10(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
-        _, _, test_ds = ds.get_all()
-        val_ds_splitted = []
-        for classes in task_classes:
-            _, val_ds, _ = ds.get_split(classes)
-            val_ds_splitted.append(val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
-        # val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
-        test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
-        IMG_SHAPE = (32, 32, 3)
-    elif args.dataset not in ['MNIST', 'CIFAR10']:
-        raise 'NotImplementedError'
     
     if args.plugin != 'Factorization':
         args.DUAL_CLASSES = False
@@ -61,11 +38,34 @@ def main(args):
         )
         start_time = time.time()
 
+        # Load data set
+        if args.dataset == 'MNIST':
+            ds = datasets.SplitMNIST(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
+            _, _, test_ds = ds.get_all()
+            val_ds_splitted = []
+            for classes in task_classes:
+                _, val_ds, _ = ds.get_split(classes)
+                val_ds_splitted.append(val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
+            test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
+            IMG_SHAPE = (28, 28, 1)
+        elif args.dataset == 'CIFAR10':
+            ds = datasets.SplitCIFAR10(num_validation=args.VAL_BATCHES * args.BATCH_SIZE)
+            _, _, test_ds = ds.get_all()
+            val_ds_splitted = []
+            for classes in task_classes:
+                _, val_ds, _ = ds.get_split(classes)
+                val_ds_splitted.append(val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize))
+            # val_ds = val_ds.cache().repeat().batch(args.BATCH_SIZE).map(utils.standardize)
+            test_ds = test_ds.cache().batch(args.BATCH_SIZE).map(utils.standardize)
+            IMG_SHAPE = (32, 32, 3)
+        elif args.dataset not in ['MNIST', 'CIFAR10']:
+            raise 'NotImplementedError'
+
         # Instantiate model and trainer
-        model = models.CNN(10)
+        model = models.CNN(10, None, None, args.activation)
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        # val_model = models.CNN(10)
-        # val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        val_model = models.CNN(10, 'relu')
+        val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         # model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
         # val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
 
@@ -86,7 +86,6 @@ def main(args):
                 buf = models.CompositionalBalancedBuffer()
             elif args.plugin == 'NewCompositional':
                 buf = models.NewCompositionalBalancedBuffer()
-
         elif args.plugin == 'Factorization':
             if args.DUAL_CLASSES:
                 buf = models.DualClassesFactorizationBuffer()
@@ -259,13 +258,13 @@ if __name__ == "__main__":
                         help='learning rate for validation training (updating net)')
     parser.add_argument('--VAL_MOMENTUM', type=float, default=0,
                         help='Momentum for validation training (updating net)')
-    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.05,
+    parser.add_argument('--DIST_LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for distillation (updating images)')
     parser.add_argument('--styler_lr', type=float, default=0.01,
                         help='learning rate for distillation (updating styler)')
     parser.add_argument('--BATCH_SIZE', type=int, default=128,
                         help='')
-    parser.add_argument('--DIST_BATCH_SIZE', type=int, default=128,
+    parser.add_argument('--DIST_BATCH_SIZE', type=int, default=256,
                         help='')
     parser.add_argument('--ITERS', type=int, default=1000,
                         help='number of iterations for validation training')
@@ -304,7 +303,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=3)
+    parser.add_argument('--group', type=int, default=12)
 
     parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
