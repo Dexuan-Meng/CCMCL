@@ -63,20 +63,9 @@ class CNN(tf.keras.Model):
     def build(self, input_shape):
 
         # Adjustable activations function
-        if self.activation_fn_0 == None:
-            self.activation_layer_0 = tf.keras.layers.Identity()
-        else:
-            self.activation_layer_0 = tf.keras.layers.Activation(self.activation_fn_0)
-
-        if self.activation_fn_1 == None:
-            self.activation_layer_1 = tf.keras.layers.Identity()
-        else:
-            self.activation_laye_1r = tf.keras.layers.Activation(self.activation_fn_1)
-
-        if self.activation_fn_2 == None:
-            self.activation_layer_2 = tf.keras.layers.Identity()
-        else:
-            self.activation_layer_2 = tf.keras.layers.Activation(self.activation_fn_2)
+        self.activation_layer_0 = tf.keras.layers.Activation(self.activation_fn_0)
+        self.activation_layer_1 = tf.keras.layers.Activation(self.activation_fn_1)
+        self.activation_layer_2 = tf.keras.layers.Activation(self.activation_fn_2)
 
         self.conv0 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
         self.norm0 = tfa.layers.InstanceNormalization()
@@ -108,7 +97,7 @@ class CNN(tf.keras.Model):
         return output
     
     def model(self):
-        x = tf.keras.Input(shape=(28, 28, 1))
+        x = tf.keras.Input(shape=(32, 32 ,3))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 

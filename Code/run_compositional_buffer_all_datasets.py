@@ -62,10 +62,14 @@ def main(args):
             raise 'NotImplementedError'
 
         # Instantiate model and trainer
-        model = models.CNN(10, None, None, args.activation)
+        model = models.CNN(10, 'relu', 'relu', args.activation) # model used during distillation
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        val_model = models.CNN(10, 'relu')
+        model.summary()
+        val_model = models.CNN(10, 'relu', 'relu', args.valmodel_activation) # model used during distillation
         val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
+        val_model.summary()
+
+        # Sequential model, temporarily deprecated
         # model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
         # val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
 
@@ -215,7 +219,7 @@ def main(args):
                                "Validation/Val_forgetting": 0 if t == 0 else np.sum(val_forgetting_container) / t,
                                "Validation/Task": t + 1})
 
-                m_train_loss.reset_states()
+                    m_train_loss.reset_states()
                     
 
         # Test model on complete data set
@@ -281,11 +285,13 @@ if __name__ == "__main__":
                             classes while updating model in Innerloop')
     parser.add_argument('--shuffle_batch', default=False, action='store_false',
                         help='whether to shuffle the batch composed of two single-class dataset')
-    parser.add_argument('--activation', type=str, default='relu',
-                        help='activation function set at the last place')
+    parser.add_argument('--activation', type=str, default="sigmoid",
+                        help='activation function of model used during distillation')
+    parser.add_argument('--valmodel_activation', type=str, default="relu",
+                        help='activation function of model used during validation and')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=5,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
@@ -303,7 +309,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=12)
+    parser.add_argument('--group', type=int, default=13)
 
     parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
