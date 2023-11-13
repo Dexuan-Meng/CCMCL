@@ -101,6 +101,108 @@ class CNN(tf.keras.Model):
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
 
 
+class DistCNN(tf.keras.Model):
+    """
+    Simple and small CNN.
+    """
+
+    def __init__(self, n):
+        super(DistCNN, self).__init__()
+        self.n = n
+        self.relu = None
+        self.sigmoid = None
+        self.conv0 = None
+        self.norm0 = None
+        self.conv1 = None
+        self.norm1 = None
+        self.conv2 = None
+        self.norm2 = None
+        self.pool = None
+        self.flatten = None
+        self.dense = None
+
+    def build(self, input_shape):
+        self.relu = tf.keras.layers.Activation("relu")
+        self.sigmoid = tf.keras.layers.Activation("sigmoid")
+        self.conv0 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm0 = tfa.layers.InstanceNormalization()
+        self.conv1 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm1 = tfa.layers.InstanceNormalization()
+        self.conv2 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm2 = tfa.layers.InstanceNormalization()
+        self.pool = tf.keras.layers.AveragePooling2D()
+        self.flatten = tf.keras.layers.Flatten()
+        self.dense = tf.keras.layers.Dense(self.n, activation="linear")
+        super(DistCNN, self).build(input_shape)
+        
+    def call(self, inputs, training=None):
+        output = self.conv0(inputs)
+        output = self.norm0(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv1(output)
+        output = self.norm1(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv2(output)
+        output = self.norm2(output)
+        output = self.sigmoid(output)
+        output = self.pool(output)
+        output = self.flatten(output)
+        output = self.dense(output)
+        return output
+
+
+class ValCNN(tf.keras.Model):
+    """
+    Simple and small CNN.
+    """
+
+    def __init__(self, n):
+        super(ValCNN, self).__init__()
+        self.n = n
+        self.relu = None
+        self.conv0 = None
+        self.norm0 = None
+        self.conv1 = None
+        self.norm1 = None
+        self.conv2 = None
+        self.norm2 = None
+        self.pool = None
+        self.flatten = None
+        self.dense = None
+
+    def build(self, input_shape):
+        self.relu = tf.keras.layers.Activation("relu")
+        self.conv0 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm0 = tfa.layers.InstanceNormalization()
+        self.conv1 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm1 = tfa.layers.InstanceNormalization()
+        self.conv2 = tf.keras.layers.Conv2D(128, 3, activation="linear", padding="SAME")
+        self.norm2 = tfa.layers.InstanceNormalization()
+        self.pool = tf.keras.layers.AveragePooling2D()
+        self.flatten = tf.keras.layers.Flatten()
+        self.dense = tf.keras.layers.Dense(self.n, activation="linear")
+        super(ValCNN, self).build(input_shape)
+        
+    def call(self, inputs, training=None):
+        output = self.conv0(inputs)
+        output = self.norm0(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv1(output)
+        output = self.norm1(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.conv2(output)
+        output = self.norm2(output)
+        output = self.relu(output)
+        output = self.pool(output)
+        output = self.flatten(output)
+        output = self.dense(output)
+        return output
+
+
 class BiC_CNN(tf.keras.Model):
     """
     CNN with bias correction layer

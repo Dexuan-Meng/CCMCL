@@ -62,12 +62,10 @@ def main(args):
             raise 'NotImplementedError'
 
         # Instantiate model and trainer
-        model = models.CNN(10, 'relu', 'relu', args.activation) # model used during distillation
+        model = models.CNN(10, args.activation_0, args.activation_1, args.activation_2) # model used during distillation
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        model.summary()
-        val_model = models.CNN(10, 'relu', 'relu', args.valmodel_activation) # model used during distillation
+        val_model = models.ValCNN(10) # model used during distillation
         val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        val_model.summary()
 
         # Sequential model, temporarily deprecated
         # model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
@@ -285,7 +283,11 @@ if __name__ == "__main__":
                             classes while updating model in Innerloop')
     parser.add_argument('--shuffle_batch', default=False, action='store_false',
                         help='whether to shuffle the batch composed of two single-class dataset')
-    parser.add_argument('--activation', type=str, default="sigmoid",
+    parser.add_argument('--activation_0', type=str, default="relu",
+                        help='activation function of model used during distillation')
+    parser.add_argument('--activation_1', type=str, default="relu",
+                        help='activation function of model used during distillation')
+    parser.add_argument('--activation_2', type=str, default="relu",
                         help='activation function of model used during distillation')
     parser.add_argument('--valmodel_activation', type=str, default="relu",
                         help='activation function of model used during validation and')
@@ -309,9 +311,9 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=13)
+    parser.add_argument('--group', type=int, default=26)
 
-    parser.add_argument('--plugin', type=str, default='Compositional', 
+    parser.add_argument('--plugin', type=str, default='Factorization', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
                         help='method for condensation')
 
