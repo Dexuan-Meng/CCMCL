@@ -4,6 +4,7 @@ This file contains models.
 
 import tensorflow as tf
 import tensorflow_addons as tfa
+import tensorflow_transform as tft
 import keras
 from keras import layers
 import abc
@@ -551,8 +552,12 @@ class CompositionalCompressor(DataCompressor):
     Compresses data into a smaller set of synthetic examples.
     """
 
-    def __init__(self, batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=10):
+    def __init__(self, batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=10, sigmoid_grad=False, 
+                 sigmoid_comp=True, sigmoid_input=False):
         super(CompositionalCompressor, self).__init__(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I)
+        self.sigmoid_grad = sigmoid_grad
+        self.sigmoid_comp = sigmoid_comp
+        self.sigmoid_input = sigmoid_input
 
     @tf.function
     def distill_step(self, x, y, c_s, w_s, y_s):
@@ -561,14 +566,32 @@ class CompositionalCompressor(DataCompressor):
             logits_x = self.mdl(x, training=False)
             loss_x = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_x, from_logits=True))
         grads = inner_tape.gradient(loss_x, self.mdl.trainable_variables)
+        # wandb.log({"unsigmoided grads":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0), num_bins=512)})
+        if self.sigmoid_grad:
+            for i in range(len(grads)):
+                grads[i] = tf.math.sigmoid(grads[i])
+            # wandb.log({"sigmoided grads":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0), num_bins=512)})
         with tf.GradientTape() as tape:
             # Make prediction using model
             with tf.GradientTape() as inner_tape:
                 # comp = tf.nn.relu(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
-                comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                if self.sigmoid_comp:
+                    comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                else:
+                    comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    # wandb.log({"sigmoided comp":wandb.Histogram(comp, num_bins=512)})
+                    comp = tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)
+                    # wandb.log({"unscaled comp":wandb.Histogram(comp, num_bins=512)})
+                    comp = (comp - tf.math.reduce_min(comp)) / (tf.math.reduce_max(comp) - tf.math.reduce_min(comp))
+                    # wandb.log({"scaled comp":wandb.Histogram(comp, num_bins=512)})
                 logits_s = self.mdl(comp, training=False)
                 loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
             grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
+            # wandb.log({"unsigmoided grads_s":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads_s], axis=0), num_bins=512),})
+            if self.sigmoid_grad:
+                for i in range(len(grads_s)):
+                    grads_s[i] = tf.math.sigmoid(grads_s[i])
+                # wandb.log({"sigmoided grads_s":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads_s], axis=0), num_bins=512)})
             # Compute cosine similarity
             dist_loss = tf.constant(0.0, dtype=tf.float32)
             for g, gs in zip(grads, grads_s):
@@ -606,7 +629,10 @@ class CompositionalCompressor(DataCompressor):
             for t in range(self.T):
                 # y_ds = next(ds_iter)
                 x_ds, y_ds = next(ds_iter)
-
+                # wandb.log({"unsigmoided input":wandb.Histogram(x_ds, num_bins=512)})
+                if self.sigmoid_input:
+                    x_ds = tf.math.sigmoid(x_ds)
+                    # wandb.log({"sigmoided input":wandb.Histogram(x_ds, num_bins=512)})
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
@@ -659,9 +685,11 @@ class CompositionalBalancedBuffer(object):
         super(CompositionalBalancedBuffer, self).__init__()
 
     def compress_add(self, ds, c, mdl, batch_size=128, train_learning_rate=0.01, dist_learning_rate=0.05, 
-                     img_shape=(28, 28, 1), num_bases=10, K=20, T=10, I=10, log_histogram=False, verbose=False):
+                     img_shape=(28, 28, 1), num_bases=10, K=20, T=10, I=10, log_histogram=False, verbose=False,
+                     sigmoid_grad=False, sigmoid_comp=True, sigmoid_input=False):
         # Create compressor
-        comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=I)
+        comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=I,
+                                       sigmoid_grad=sigmoid_grad, sigmoid_comp=sigmoid_comp, sigmoid_input=sigmoid_input)
         # Compress data
         num_weights = int(2*num_bases)
         num_components = int(num_bases)

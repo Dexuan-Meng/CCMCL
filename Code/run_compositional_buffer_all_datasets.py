@@ -31,7 +31,7 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Sigmoid Study: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Sigmoid position: {} {}-{} ".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -82,7 +82,10 @@ def main(args):
                 'K': args.K,
                 'T': args.T,
                 'I': args.I,
-                'log_histogram': args.log_histogram
+                'log_histogram': args.log_histogram,
+                'sigmoid_grad': args.sigmoid_grad,
+                'sigmoid_comp': args.sigmoid_comp,
+                'sigmoid_input': args.sigmoid_input
             }
             if args.plugin == 'Compositional':
                 buf = models.CompositionalBalancedBuffer()
@@ -284,14 +287,21 @@ if __name__ == "__main__":
                             classes while updating model in Innerloop')
     parser.add_argument('--shuffle_batch', default=False, action='store_false',
                         help='whether to shuffle the batch composed of two single-class dataset')
+    # Sigmoid Test
     parser.add_argument('--activation_0', type=str, default="relu",
                         help='activation function of model used during distillation')
     parser.add_argument('--activation_1', type=str, default="relu",
                         help='activation function of model used during distillation')
-    parser.add_argument('--activation_2', type=str, default="sigmoid",
+    parser.add_argument('--activation_2', type=str, default="relu",
                         help='activation function of model used during distillation')
     parser.add_argument('--valmodel_activation', type=str, default="relu",
                         help='activation function of model used during validation and')
+    parser.add_argument('--sigmoid_grad', type=bool, default=False,
+                        help='whether to add sigmoid on the gradients')
+    parser.add_argument('--sigmoid_comp', type=bool, default=True,
+                        help='whether to add sigmoid on the composed images')
+    parser.add_argument('--sigmoid_input', type=bool, default=False,
+                        help='whether to add sigmoid on the input images')
 
     # Hyperparameters to be heavily tuned
     parser.add_argument('--RUNS', type=int, default=5,
