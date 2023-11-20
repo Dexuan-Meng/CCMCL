@@ -164,10 +164,11 @@ def main(args):
             m_val_acc = tf.keras.metrics.Accuracy()
             m_val_loss = tf.keras.metrics.Mean()
             utils.reinitialize_model(model)
+            utils.reinitialize_model(val_model)
             for iters in range(args.ITERS):
                 # Sample a batch from the buffer and train
                 x_r, y_r = buf.sample(args.BATCH_SIZE)
-                current_loss = train.train_step(x_r, y_r, model, optimizer)
+                current_loss = train.train_step(x_r, y_r, val_model, optimizer)
                 wandb.log({"Validation/train_loss": current_loss, "Validation/train_iters": t * args.ITERS + iters})
                 m_train_loss.update_state(current_loss)
 
@@ -179,7 +180,7 @@ def main(args):
                         val_iters = 0
                         for x, y in val_ds:
                             val_iters += 1
-                            logits = model(x, training=False)
+                            logits = val_model(x, training=False)
                             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
                             m_val_loss.update_state(current_loss)
                             m_val_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
@@ -224,7 +225,7 @@ def main(args):
         m_test_acc = tf.keras.metrics.Accuracy()
         m_test_loss = tf.keras.metrics.Mean()
         for x, y in test_ds:
-            logits = model(x, training=False)
+            logits = val_model(x, training=False)
             current_loss = tf.keras.losses.categorical_crossentropy(y, logits, from_logits=True)
             m_test_acc.update_state(tf.argmax(y, axis=-1), tf.argmax(logits, axis=-1))
             m_test_loss.update_state(current_loss)
@@ -268,9 +269,9 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=256,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=1000,
+    parser.add_argument('--ITERS', type=int, default=2000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=1000,
+    parser.add_argument('--VAL_ITERS', type=int, default=2000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
@@ -287,7 +288,7 @@ if __name__ == "__main__":
                         help='activation function of model used during distillation')
     parser.add_argument('--activation_1', type=str, default="relu",
                         help='activation function of model used during distillation')
-    parser.add_argument('--activation_2', type=str, default="relu",
+    parser.add_argument('--activation_2', type=str, default="sigmoid",
                         help='activation function of model used during distillation')
     parser.add_argument('--valmodel_activation', type=str, default="relu",
                         help='activation function of model used during validation and')
@@ -311,9 +312,9 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=26)
+    parser.add_argument('--group', type=int, default=0)
 
-    parser.add_argument('--plugin', type=str, default='Factorization', 
+    parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
                         help='method for condensation')
 
