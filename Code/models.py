@@ -629,7 +629,8 @@ class CompositionalCompressor(DataCompressor):
             for t in range(self.T):
                 # y_ds = next(ds_iter)
                 x_ds, y_ds = next(ds_iter)
-                # wandb.log({"unsigmoided input":wandb.Histogram(x_ds, num_bins=512)})
+                if t == 0:
+                    wandb.log({"Pixel Distribution/class {}/Input images".format(c):wandb.Histogram(x_ds, num_bins=512)})
                 if self.sigmoid_input:
                     x_ds = tf.math.sigmoid(x_ds)
                     # wandb.log({"sigmoided input":wandb.Histogram(x_ds, num_bins=512)})
@@ -656,9 +657,8 @@ class CompositionalCompressor(DataCompressor):
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
             if log_histogram:
                 wandb.log({
-                    "Distill/class {}/Synthetic_Pixels".format(c):
+                    "Pixel Distribution/class {}/composed images".format(c):
                     wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
-                    "Distill/class {}/Base_Pixels".format(c): wandb.Histogram(c_s, num_bins=512)
                     })
         return c_s, w_s, y_s
 
