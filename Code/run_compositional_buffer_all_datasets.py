@@ -12,8 +12,9 @@ import numpy as np
 import os
 import wandb
 import time
-from utils import make_grid
+from utils import make_grid, narrowed_sigmoid, widened_sigmoid, translated_sigmoid
 from models import get_sequential_model
+from keras.utils.generic_utils import get_custom_objects
 
 def main(args):
     
@@ -31,7 +32,7 @@ def main(args):
         val_forgetting_splitted = {0:[], 1:[], 2:[], 3:[], 4:[]}
 
         wandb.init(sync_tensorboard=False,
-                name="Sigmoid position: {} {}-{} ".format(args.dataset, ID, run), 
+                name="Sigmoid position: {} {}-{}".format(args.dataset, ID, run), 
                 project="CCMCL",
                 job_type="CleanRepo",
                 config=args
@@ -62,6 +63,9 @@ def main(args):
             raise 'NotImplementedError'
 
         # Instantiate model and trainer
+        get_custom_objects().update({'widened_sigmoid': tf.keras.layers.Activation(widened_sigmoid)})
+        get_custom_objects().update({'narrowed_sigmoid': tf.keras.layers.Activation(narrowed_sigmoid)})
+        get_custom_objects().update({'translated_sigmoid': tf.keras.layers.Activation(translated_sigmoid)})
         model = models.CNN(10, args.activation_0, args.activation_1, args.activation_2) # model used during distillation
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         val_model = models.ValCNN(10) # model used during distillation
@@ -83,9 +87,9 @@ def main(args):
                 'T': args.T,
                 'I': args.I,
                 'log_histogram': args.log_histogram,
-                'sigmoid_grad': args.sigmoid_grad,
-                'sigmoid_comp': args.sigmoid_comp,
-                'sigmoid_input': args.sigmoid_input
+                # 'sigmoid_grad': args.sigmoid_grad,
+                # 'sigmoid_comp': args.sigmoid_comp,
+                # 'sigmoid_input': args.sigmoid_input
             }
             if args.plugin == 'Compositional':
                 buf = models.CompositionalBalancedBuffer()
@@ -272,9 +276,9 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=256,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=2000,
+    parser.add_argument('--ITERS', type=int, default=5000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=2000,
+    parser.add_argument('--VAL_ITERS', type=int, default=5000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
@@ -292,23 +296,24 @@ if __name__ == "__main__":
                         help='activation function of model used during distillation')
     parser.add_argument('--activation_1', type=str, default="relu",
                         help='activation function of model used during distillation')
-    parser.add_argument('--activation_2', type=str, default="relu",
+    parser.add_argument('--activation_2', type=str, default="sigmoid",
+                        choices=["relu", "sigmoid", "widened_sigmoid", "narrowed_sigmoid", "translated_sigmoid"],
                         help='activation function of model used during distillation')
     parser.add_argument('--valmodel_activation', type=str, default="relu",
                         help='activation function of model used during validation and')
-    parser.add_argument('--sigmoid_grad', type=bool, default=False,
-                        help='whether to add sigmoid on the gradients')
-    parser.add_argument('--sigmoid_comp', type=bool, default=True,
-                        help='whether to add sigmoid on the composed images')
-    parser.add_argument('--sigmoid_input', type=bool, default=False,
-                        help='whether to add sigmoid on the input images')
+    # parser.add_argument('--sigmoid_grad', action='store_true', default=False,
+    #                     help='whether to add sigmoid on the gradients')
+    # parser.add_argument('--sigmoid_comp', action='store_false', default=True,
+    #                     help='whether to add sigmoid on the composed images')
+    # parser.add_argument('--sigmoid_input', action='store_true', default=False,
+    #                     help='whether to add sigmoid on the input images')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=5,
+    parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=20, 
+    parser.add_argument('--K', type=int, default=100, 
                         help='number of distillation iterations')
     parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
@@ -322,7 +327,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=0)
+    parser.add_argument('--group', type=int, default=9)
 
     parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],

@@ -12,7 +12,7 @@ import numpy as np
 import wandb
 from tqdm import tqdm
 import utils
-from utils import get_batch_size, sample_batch
+from utils import get_batch_size, sample_batch, translated_sigmoid
 
 
 def get_sequential_model(input_shape, activation='sigmoid'):
@@ -559,7 +559,7 @@ class CompositionalCompressor(DataCompressor):
         self.sigmoid_comp = sigmoid_comp
         self.sigmoid_input = sigmoid_input
 
-    @tf.function
+    # @tf.function
     def distill_step(self, x, y, c_s, w_s, y_s):
         # Minimize cosine similarity between gradients
         with tf.GradientTape() as inner_tape:
@@ -576,7 +576,7 @@ class CompositionalCompressor(DataCompressor):
             with tf.GradientTape() as inner_tape:
                 # comp = tf.nn.relu(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                 if self.sigmoid_comp:
-                    comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    comp = translated_sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                 else:
                     comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                     # wandb.log({"sigmoided comp":wandb.Histogram(comp, num_bins=512)})
@@ -659,6 +659,9 @@ class CompositionalCompressor(DataCompressor):
                 wandb.log({
                     "Pixel Distribution/class {}/composed images".format(c):
                     wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
+                    "Pixel Distribution/class {}/unsigmoided images".format(c):
+                    wandb.Histogram(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1), num_bins=512),
+                    "Pixel Distribution/class {}/base images".format(c): wandb.Histogram(c_s, num_bins=512),
                     })
         return c_s, w_s, y_s
 

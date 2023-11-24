@@ -7,6 +7,7 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
 import numpy as np
+from keras import backend as K
 
 
 # Enable dynamic memory allocation
@@ -246,3 +247,15 @@ def sample_batch(batch_x, batch_y, batch_size):
     x_ds = tf.gather(batch_x, indices)
     y_ds = tf.gather(batch_y, indices)
     return x_ds, y_ds
+
+
+def narrowed_sigmoid(x):
+    return K.sigmoid(2 * x)
+
+
+def widened_sigmoid(x):
+    return K.sigmoid(0.5 * x)
+
+
+def translated_sigmoid(x):
+    return K.sigmoid(x - 0.5)
