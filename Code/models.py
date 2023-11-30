@@ -7,12 +7,13 @@ import tensorflow_addons as tfa
 import tensorflow_transform as tft
 import keras
 from keras import layers
+import matplotlib.pyplot as plt
 import abc
 import numpy as np
 import wandb
 from tqdm import tqdm
 import utils
-from utils import get_batch_size, sample_batch, translated_sigmoid
+from utils import get_batch_size, sample_batch, adjusted_sigmoid, comp_sigmoid
 
 
 def get_sequential_model(input_shape, activation='sigmoid'):
@@ -559,7 +560,7 @@ class CompositionalCompressor(DataCompressor):
         self.sigmoid_comp = sigmoid_comp
         self.sigmoid_input = sigmoid_input
 
-    # @tf.function
+    @tf.function
     def distill_step(self, x, y, c_s, w_s, y_s):
         # Minimize cosine similarity between gradients
         with tf.GradientTape() as inner_tape:
@@ -576,7 +577,9 @@ class CompositionalCompressor(DataCompressor):
             with tf.GradientTape() as inner_tape:
                 # comp = tf.nn.relu(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                 if self.sigmoid_comp:
-                    comp = translated_sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    comp = comp_sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    # comp = translated_sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
+                    
                 else:
                     comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1))
                     # wandb.log({"sigmoided comp":wandb.Histogram(comp, num_bins=512)})
@@ -629,16 +632,17 @@ class CompositionalCompressor(DataCompressor):
             for t in range(self.T):
                 # y_ds = next(ds_iter)
                 x_ds, y_ds = next(ds_iter)
-                if t == 0:
-                    wandb.log({"Pixel Distribution/class {}/Input images".format(c):wandb.Histogram(x_ds, num_bins=512)})
+                # if t == 0:
+                #     wandb.log({"Pixel Distribution/class {}/Input images".format(c):wandb.Histogram(x_ds, num_bins=512)})
                 if self.sigmoid_input:
                     x_ds = tf.math.sigmoid(x_ds)
                     # wandb.log({"sigmoided input":wandb.Histogram(x_ds, num_bins=512)})
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
                     dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
-                    wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
                     distill_step += 1
+                wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
+                
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
                 if x_t is not None:
@@ -655,14 +659,39 @@ class CompositionalCompressor(DataCompressor):
                 # Training is still necessary for the verbose.
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
-            if log_histogram:
-                wandb.log({
-                    "Pixel Distribution/class {}/composed images".format(c):
-                    wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
-                    "Pixel Distribution/class {}/unsigmoided images".format(c):
-                    wandb.Histogram(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1), num_bins=512),
-                    "Pixel Distribution/class {}/base images".format(c): wandb.Histogram(c_s, num_bins=512),
-                    })
+        if log_histogram:
+            # wandb.log({
+            #     "Pixel Distribution/class {}/composed images".format(c):
+            #     wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
+            #     "Pixel Distribution/class {}/unsigmoided images".format(c):
+            #     wandb.Histogram(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1), num_bins=512),
+            #     "Pixel Distribution/class {}/base images".format(c): wandb.Histogram(c_s, num_bins=512),
+            #     })
+            Histo_input = np.histogram(x_ds, bins=128)
+            unsigmoided_comp = tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)
+            comp = comp_sigmoid(unsigmoided_comp)
+            Histo_unsigmoided = np.histogram(unsigmoided_comp, bins=128)
+            Histo_comp = np.histogram(comp, bins=128)
+            y_input = Histo_input[0] / np.sum(Histo_input[0])
+            y_unsigmoided = Histo_unsigmoided[0] / np.sum(Histo_unsigmoided[0])
+            y_comp = Histo_comp[0] / np.sum(Histo_comp[0])
+            bins_comp = ((Histo_comp[1][:-1] + Histo_comp[1][1:]) / 2)
+            bins_unsigmoided = ((Histo_unsigmoided[1][:-1] + Histo_unsigmoided[1][1:]) / 2)
+
+            plt.figure()
+            plt.plot(bins_comp, y_input, label="input")
+            plt.plot(bins_comp, y_comp, label="comp")
+            plt.ylim(0)
+            plt.legend()
+            wandb.log({"Pixel Distribution/class {}/Input and composed images - class {}".format(c,c): plt})
+
+            plt.figure()
+            plt.plot(bins_unsigmoided, y_unsigmoided, label="unsigmoided")
+            plt.plot(bins_comp, y_comp, label="comp")
+            plt.ylim(0)
+            plt.legend()
+            wandb.log({"Pixel Distribution/class {}/Unsigmoided and composed images - class {}".format(c, c): plt})
+
         return c_s, w_s, y_s
 
 
@@ -693,6 +722,7 @@ class CompositionalBalancedBuffer(object):
         # Create compressor
         comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=I,
                                        sigmoid_grad=sigmoid_grad, sigmoid_comp=sigmoid_comp, sigmoid_input=sigmoid_input)
+        self.sigmoid_comp = sigmoid_comp
         # Compress data
         num_weights = int(2*num_bases)
         num_components = int(num_bases)
@@ -726,9 +756,9 @@ class CompositionalBalancedBuffer(object):
     @staticmethod
     def compose_image(c_buffer, w_buffer, cl, idx=None):
         if idx is None:
-            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
+            comp = comp_sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
         else:
-            comp = tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl][idx], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
+            comp = comp_sigmoid(tf.reduce_sum(tf.multiply(w_buffer[cl][idx], tf.expand_dims(c_buffer[cl], axis=0)), axis=1))
         return comp
 
     def sample_old(self, k):

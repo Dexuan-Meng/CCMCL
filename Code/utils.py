@@ -249,13 +249,19 @@ def sample_batch(batch_x, batch_y, batch_size):
     return x_ds, y_ds
 
 
-def narrowed_sigmoid(x):
-    return K.sigmoid(2 * x)
+def def_beta(beta=1.0, gamma=0.0, comp_beta=1.0, comp_gamma=0.0):
+    global global_beta
+    global_beta = beta
+    global global_gamma
+    global_gamma = gamma
+    global global_comp_beta
+    global_comp_beta = comp_beta
+    global global_comp_gamma
+    global_comp_gamma = comp_gamma
 
 
-def widened_sigmoid(x):
-    return K.sigmoid(0.5 * x)
+def adjusted_sigmoid(x):
+    return K.sigmoid(global_beta * (x - global_gamma))
 
-
-def translated_sigmoid(x):
-    return K.sigmoid(x - 0.5)
+def comp_sigmoid(x):
+    return K.sigmoid(global_comp_beta * (x - global_comp_gamma))
