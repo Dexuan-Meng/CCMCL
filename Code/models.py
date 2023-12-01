@@ -44,12 +44,13 @@ class CNN(tf.keras.Model):
     Simple and small CNN.
     """
 
-    def __init__(self, n, activation_0, activation_1, activation_2):
+    def __init__(self, n, activation_0, activation_1, activation_2, activation_3):
         super(CNN, self).__init__()
         self.n = n
         self.activation_fn_0 = activation_0
         self.activation_fn_1 = activation_1
         self.activation_fn_2 = activation_2
+        self.activation_fn_3 = activation_3
         self.activation_layer = None
         self.relu = None
         self.conv0 = None
@@ -78,7 +79,7 @@ class CNN(tf.keras.Model):
 
         self.pool = tf.keras.layers.AveragePooling2D()
         self.flatten = tf.keras.layers.Flatten()
-        self.dense = tf.keras.layers.Dense(self.n, activation="linear")
+        self.dense = tf.keras.layers.Dense(self.n, activation=self.activation_fn_3)
         super(CNN, self).build(input_shape)
         
     def call(self, inputs, training=None):
@@ -609,7 +610,10 @@ class CompositionalCompressor(DataCompressor):
                 dist_loss += tf.reduce_sum(tf.subtract(tf.constant(1.0, dtype=tf.float32), inner))
         dist_grads = tape.gradient(dist_loss, [c_s, w_s])
         self.dist_opt.apply_gradients(zip(dist_grads, [c_s, w_s]))
-        return dist_loss
+
+        return dist_loss, g_norm, gs_norm
+
+
 
     def compress(self, ds, c, img_shape, num_synth, k, buf=None, log_histogram=False, verbose=False):
         # Create and initialize synthetic data
@@ -639,7 +643,7 @@ class CompositionalCompressor(DataCompressor):
                     # wandb.log({"sigmoided input":wandb.Histogram(x_ds, num_bins=512)})
                 # Perform distillation step
                 for i in range(self.I): # one batch of dataset distills the components I iterations
-                    dist_loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
+                    dist_loss, grads, grads_s = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
                     distill_step += 1
                 wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
                 
@@ -657,6 +661,12 @@ class CompositionalCompressor(DataCompressor):
                 update_step += 1
                 # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
                 # Training is still necessary for the verbose.
+            wandb.log({
+                "Gradients Distribution/Gradient real - class {}".format(c):
+                wandb.Histogram(grads, num_bins=128),
+                "Gradients Distribution/Gradient synth - class {}".format(c):
+                wandb.Histogram(grads_s, num_bins=128),
+                })
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
         if log_histogram:
@@ -667,6 +677,7 @@ class CompositionalCompressor(DataCompressor):
             #     wandb.Histogram(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1), num_bins=512),
             #     "Pixel Distribution/class {}/base images".format(c): wandb.Histogram(c_s, num_bins=512),
             #     })
+
             Histo_input = np.histogram(x_ds, bins=128)
             unsigmoided_comp = tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)
             comp = comp_sigmoid(unsigmoided_comp)

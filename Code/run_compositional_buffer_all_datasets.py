@@ -12,7 +12,7 @@ import numpy as np
 import os
 import wandb
 import time
-from utils import make_grid, narrowed_sigmoid, widened_sigmoid, translated_sigmoid
+from utils import make_grid, adjusted_sigmoid, def_beta
 from models import get_sequential_model
 from keras.utils.generic_utils import get_custom_objects
 
@@ -63,10 +63,9 @@ def main(args):
             raise 'NotImplementedError'
 
         # Instantiate model and trainer
-        get_custom_objects().update({'widened_sigmoid': tf.keras.layers.Activation(widened_sigmoid)})
-        get_custom_objects().update({'narrowed_sigmoid': tf.keras.layers.Activation(narrowed_sigmoid)})
-        get_custom_objects().update({'translated_sigmoid': tf.keras.layers.Activation(translated_sigmoid)})
-        model = models.CNN(10, args.activation_0, args.activation_1, args.activation_2) # model used during distillation
+        def_beta(beta=args.sigmoid_beta, gamma=args.sigmoid_gamma, comp_beta=args.comp_beta, comp_gamma=args.comp_gamma)
+        get_custom_objects().update({'adjusted_sigmoid': tf.keras.layers.Activation(adjusted_sigmoid)})
+        model = models.CNN(10, args.activation_0, args.activation_1, args.activation_2, args.activation_3) # model used during distillation
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
         val_model = models.ValCNN(10) # model used during distillation
         val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
@@ -207,7 +206,6 @@ def main(args):
                                 # Reset validation iterations
                                 val_iters = 0
                                 break
-
                         
                         val_acc_splitted[idx].append(val_acc)
                         val_acc_container.append(val_acc)
@@ -296,11 +294,23 @@ if __name__ == "__main__":
                         help='activation function of model used during distillation')
     parser.add_argument('--activation_1', type=str, default="relu",
                         help='activation function of model used during distillation')
-    parser.add_argument('--activation_2', type=str, default="sigmoid",
-                        choices=["relu", "sigmoid", "widened_sigmoid", "narrowed_sigmoid", "translated_sigmoid"],
+    parser.add_argument('--activation_2', type=str, default="relu",
+                        choices=["relu", "sigmoid", "adjusted_sigmoid"],
+                        help='activation function of model used during distillation')
+    parser.add_argument('--activation_3', type=str, default="linear",
+                        choices=["relu", "sigmoid", "adjusted_sigmoid", "linear"],
                         help='activation function of model used during distillation')
     parser.add_argument('--valmodel_activation', type=str, default="relu",
                         help='activation function of model used during validation and')
+    parser.add_argument('--sigmoid_beta', type=float, default=1.0,
+                        help='factor beta multiplied to the input of sigmoid function')
+    parser.add_argument('--sigmoid_gamma', type=float, default=0.0,
+                        help='factor beta multiplied to the input of sigmoid function')
+    parser.add_argument('--comp_beta', type=float, default=1.0,
+                        help='factor beta multiplied to the input of sigmoid function')
+    parser.add_argument('--comp_gamma', type=float, default=0.0,
+                        help='factor beta multiplied to the input of sigmoid function')
+
     # parser.add_argument('--sigmoid_grad', action='store_true', default=False,
     #                     help='whether to add sigmoid on the gradients')
     # parser.add_argument('--sigmoid_comp', action='store_false', default=True,
@@ -309,11 +319,11 @@ if __name__ == "__main__":
     #                     help='whether to add sigmoid on the input images')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=100, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
     parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
@@ -327,7 +337,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=9)
+    parser.add_argument('--group', type=int, default=14)
 
     parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
