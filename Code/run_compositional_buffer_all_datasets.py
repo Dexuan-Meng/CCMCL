@@ -86,7 +86,8 @@ def main(args):
                 'T': args.T,
                 'I': args.I,
                 'log_histogram': args.log_histogram,
-                # 'sigmoid_grad': args.sigmoid_grad,
+                'sigmoid_grad': args.sigmoid_grad,
+                'sigmoid_logits': args.sigmoid_logits,
                 # 'sigmoid_comp': args.sigmoid_comp,
                 # 'sigmoid_input': args.sigmoid_input
             }
@@ -274,13 +275,13 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=256,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=5000,
+    parser.add_argument('--ITERS', type=int, default=1000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=5000,
+    parser.add_argument('--VAL_ITERS', type=int, default=1000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
-    parser.add_argument('--log_histogram', default=True, action='store_true',
+    parser.add_argument('--log_histogram', default=True, action='store_false',
                         help='whether to log histogram to wandb')
     parser.add_argument('--current_data_proportion', type=float, default=0.2,
                         help='proportion of data of current classes for updating model in innerloop')
@@ -302,7 +303,7 @@ if __name__ == "__main__":
                         help='activation function of model used during distillation')
     parser.add_argument('--valmodel_activation', type=str, default="relu",
                         help='activation function of model used during validation and')
-    parser.add_argument('--sigmoid_beta', type=float, default=1.0,
+    parser.add_argument('--sigmoid_beta', type=float, default=0.0,
                         help='factor beta multiplied to the input of sigmoid function')
     parser.add_argument('--sigmoid_gamma', type=float, default=0.0,
                         help='factor beta multiplied to the input of sigmoid function')
@@ -311,8 +312,10 @@ if __name__ == "__main__":
     parser.add_argument('--comp_gamma', type=float, default=0.0,
                         help='factor beta multiplied to the input of sigmoid function')
 
-    # parser.add_argument('--sigmoid_grad', action='store_true', default=False,
-    #                     help='whether to add sigmoid on the gradients')
+    parser.add_argument('--sigmoid_grad', action='store_true', default=False,
+                        help='whether to add sigmoid on the gradients')
+    parser.add_argument('--sigmoid_logits', action='store_true', default=False,
+                        help='whether to add sigmoid on the logits')
     # parser.add_argument('--sigmoid_comp', action='store_false', default=True,
     #                     help='whether to add sigmoid on the composed images')
     # parser.add_argument('--sigmoid_input', action='store_true', default=False,
@@ -323,11 +326,11 @@ if __name__ == "__main__":
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=20, 
+    parser.add_argument('--K', type=int, default=5, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=10,
+    parser.add_argument('--T', type=int, default=5,
                         help='number of outerloops')
-    parser.add_argument('--I', type=int, default=10,
+    parser.add_argument('--I', type=int, default=5,
                         help='number of update within one outerloop')
     parser.add_argument('--IN', type=int, default=1,
                         help='number of update for innerloop')
