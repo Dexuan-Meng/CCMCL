@@ -1,4 +1,4 @@
-#!/usr/bin/python3.6
+#!/usr/bin/python3.7
 """
 Script for training
 """
@@ -13,16 +13,12 @@ import os
 import wandb
 import time
 from utils import make_grid, adjusted_sigmoid, def_beta
-from models import get_sequential_model
 from keras.utils.generic_utils import get_custom_objects
 
 def main(args):
     
     CLASSES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
     task_classes = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]]
-    
-    if args.plugin != 'Factorization':
-        args.DUAL_CLASSES = False
     
     ID = str(np.random.randint(999)).zfill(3)
 
@@ -70,59 +66,22 @@ def main(args):
         val_model = models.CNN(10, args.val_activation_0, args.val_activation_1, args.val_activation_2, "linear") # model used during validation
         val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
 
-        # Sequential model, temporarily deprecated
-        # model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation=args.activation)
-        # val_model = get_sequential_model((IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]), activation='relu')
-
         # Instantiate buffer
-        if 'Compositional' in args.plugin:
-            condensation_args = {
-                'batch_size': args.BATCH_SIZE,
-                'train_learning_rate': args.LEARNING_RATE,
-                'dist_learning_rate': args.DIST_LEARNING_RATE,
-                'img_shape': IMG_SHAPE,
-                'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
-                'K': args.K,
-                'T': args.T,
-                'I': args.I,
-                'log_histogram': args.log_histogram,
-                'sigmoid_grad': args.sigmoid_grad,
-                'sigmoid_logits': args.sigmoid_logits,
-                'tanh_logits': args.tanh_logits,
-                # 'sigmoid_comp': args.sigmoid_comp,
-                # 'sigmoid_input': args.sigmoid_input
-            }
-            if args.plugin == 'Compositional':
-                buf = models.CompositionalBalancedBuffer()
-            elif args.plugin == 'NewCompositional':
-                buf = models.NewCompositionalBalancedBuffer()
-        elif args.plugin == 'Factorization':
-            if args.DUAL_CLASSES:
-                buf = models.DualClassesFactorizationBuffer()
-            else:
-                buf = models.FactorizationBalancedBuffer()
-            
-            condensation_args = {
-                'num_stylers': args.num_stylers,
-                'batch_size': args.BATCH_SIZE,
-                'train_learning_rate': args.LEARNING_RATE,
-                'img_learning_rate': args.DIST_LEARNING_RATE,
-                'styler_learning_rate': args.styler_lr,
-                'img_shape': IMG_SHAPE,
-                'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
-                'K': args.K,
-                'T': args.T,
-                'I': args.I,
-                'IN': args.IN,
-                'lambda_club_content': args.lambda_club_content,
-                'lambda_likeli_content': args.lambda_likeli_content,
-                'lambda_cls_content': args.lambda_cls_content,
-                'lambda_contrast_content': args.lambda_contrast_content,
-                'log_histogram': args.log_histogram,
-                'current_data_proportion': args.current_data_proportion,
-                'use_image_being_condensed': args.use_image_being_condensed,
-                'shuffle_batch': args.shuffle_batch
-            }
+        condensation_args = {
+            'batch_size': args.BATCH_SIZE,
+            'train_learning_rate': args.LEARNING_RATE,
+            'dist_learning_rate': args.DIST_LEARNING_RATE,
+            'img_shape': IMG_SHAPE,
+            'num_bases': int(args.BUFFER_SIZE / len(CLASSES)),
+            'K': args.K,
+            'T': args.T,
+            'I': args.I,
+            'log_histogram': args.log_histogram,
+            'sigmoid_grad': args.sigmoid_grad,
+            'sigmoid_logits': args.sigmoid_logits,
+            'tanh_logits': args.tanh_logits
+        }
+        buf = models.CompositionalBalancedBuffer()
 
         # Instantiate trainer and optimizer
         train = utils.Trainer()
@@ -143,21 +102,12 @@ def main(args):
             print("Distilling classes {}..".format(classes))
             # Compress and store
 
-            if args.DUAL_CLASSES:
-                dual_train_datasets = {}
-                for c in classes:
-                    # Load training data set
-                    train_ds, _, _ = ds.get_split(c)
-                    dual_train_datasets[c] = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
-                buf.compress_add(dual_train_datasets, classes, model, **condensation_args)
-                buf.summary()
-            else:
-                for c in classes:
-                    # Load training data set
-                    train_ds, _, _ = ds.get_split(c)
-                    train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
-                    buf.compress_add(train_ds, c, model, **condensation_args)
-                buf.summary()
+            for c in classes:
+                # Load training data set
+                train_ds, _, _ = ds.get_split(c)
+                train_ds = train_ds.cache().repeat().shuffle(10000).batch(args.DIST_BATCH_SIZE).map(utils.standardize)
+                buf.compress_add(train_ds, c, model, **condensation_args)
+            buf.summary()
 
             for cl in classes:
                 grid = make_grid(buf.buffer_box[0][cl])
@@ -227,22 +177,6 @@ def main(args):
 
                     m_train_loss.reset_states()
                     
-        # sigmoid_position = "no_sigmoid"
-        # if args.sigmoid_logits:
-        #     sigmoid_position = "logits"
-
-        # if args.activation_2 == "adjusted_sigmoid":
-        #     sigmoid_position = "model"
-        # elif args.activation_2 == "linear":
-        #     sigmoid_position = "model_linear"
-        
-        # beta = args.sigmoid_beta
-
-        filename = str(ID) + "_" + str(run)
-        
-        np.save("dense_" + filename, np.asarray(buf.dense_layer_gradients))
-        np.save("conv3_" + filename, np.asarray(buf.conv3_layer_gradients))
-        np.save("comp_" + filename, np.asarray(buf.syn_images.numpy()))
         # Test model on complete data set
         m_test_acc = tf.keras.metrics.Accuracy()
         m_test_loss = tf.keras.metrics.Mean()
@@ -269,8 +203,6 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--DUAL_CLASSES', default=True, action='store_false',
-                        help='whether compressing data of two classes at a time')
     parser.add_argument('--dataset', type=str, default='CIFAR10',
                         choices=['MNIST', 'CIFAR10', 'FashionMNIST', 'SVHN'])
     parser.add_argument('--TASKS', type=int, default=5,
@@ -291,16 +223,14 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=256,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=5000,
+    parser.add_argument('--ITERS', type=int, default=50,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=5000,
+    parser.add_argument('--VAL_ITERS', type=int, default=50,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
     parser.add_argument('--log_histogram', default=False, action='store_false',
                         help='whether to log histogram to wandb')
-    parser.add_argument('--current_data_proportion', type=float, default=0.2,
-                        help='proportion of data of current classes for updating model in innerloop')
     parser.add_argument('--use_image_being_condensed', default=True, action='store_false',
                         help='whether to use image being condensed or real images as data of current \
                             classes while updating model in Innerloop')
@@ -338,34 +268,25 @@ if __name__ == "__main__":
                         help='whether to add sigmoid on the logits')
     parser.add_argument('--tanh_logits', action='store_true', default=False,
                         help='whether to add tanh on the logits')
-    # parser.add_argument('--sigmoid_comp', action='store_false', default=True,
-    #                     help='whether to add sigmoid on the composed images')
-    # parser.add_argument('--sigmoid_input', action='store_true', default=False,
-    #                     help='whether to add sigmoid on the input images')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=3,
+    parser.add_argument('--RUNS', type=int, default=1,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=20, 
+    parser.add_argument('--K', type=int, default=2, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=10,
+    parser.add_argument('--T', type=int, default=1,
                         help='number of outerloops')
-    parser.add_argument('--I', type=int, default=10,
+    parser.add_argument('--I', type=int, default=1,
                         help='number of update within one outerloop')
     parser.add_argument('--IN', type=int, default=1,
                         help='number of update for innerloop')
 
-    parser.add_argument('--lambda_club_content', type=float, default=10)
-    parser.add_argument('--lambda_contrast_content', type=float, default=10)
-    parser.add_argument('--lambda_likeli_content', type=float, default=1)
-    parser.add_argument('--lambda_cls_content', type=float, default=1)
-
     parser.add_argument('--group', type=int, default=44)
 
     parser.add_argument('--plugin', type=str, default='Compositional', 
-                        choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],
+                        choices=['Compositional'],
                         help='method for condensation')
 
     args = parser.parse_args()
