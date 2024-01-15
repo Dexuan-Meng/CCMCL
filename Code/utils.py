@@ -265,3 +265,6 @@ def adjusted_sigmoid(x):
 
 def comp_sigmoid(x):
     return K.sigmoid(global_comp_beta * (x - global_comp_gamma))
+
+def adjusted_tanh(x):
+    return K.tanh(global_beta * (x - global_gamma))

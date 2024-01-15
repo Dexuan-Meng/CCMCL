@@ -67,7 +67,7 @@ def main(args):
         get_custom_objects().update({'adjusted_sigmoid': tf.keras.layers.Activation(adjusted_sigmoid)})
         model = models.CNN(10, args.activation_0, args.activation_1, args.activation_2, args.activation_3) # model used during distillation
         model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
-        val_model = models.ValCNN(10) # model used during distillation
+        val_model = models.CNN(10, args.val_activation_0, args.val_activation_1, args.val_activation_2, "linear") # model used during validation
         val_model.build((None, IMG_SHAPE[0], IMG_SHAPE[1], IMG_SHAPE[2]))
 
         # Sequential model, temporarily deprecated
@@ -88,6 +88,7 @@ def main(args):
                 'log_histogram': args.log_histogram,
                 'sigmoid_grad': args.sigmoid_grad,
                 'sigmoid_logits': args.sigmoid_logits,
+                'tanh_logits': args.tanh_logits,
                 # 'sigmoid_comp': args.sigmoid_comp,
                 # 'sigmoid_input': args.sigmoid_input
             }
@@ -226,7 +227,22 @@ def main(args):
 
                     m_train_loss.reset_states()
                     
+        # sigmoid_position = "no_sigmoid"
+        # if args.sigmoid_logits:
+        #     sigmoid_position = "logits"
 
+        # if args.activation_2 == "adjusted_sigmoid":
+        #     sigmoid_position = "model"
+        # elif args.activation_2 == "linear":
+        #     sigmoid_position = "model_linear"
+        
+        # beta = args.sigmoid_beta
+
+        filename = str(ID) + "_" + str(run)
+        
+        np.save("dense_" + filename, np.asarray(buf.dense_layer_gradients))
+        np.save("conv3_" + filename, np.asarray(buf.conv3_layer_gradients))
+        np.save("comp_" + filename, np.asarray(buf.syn_images.numpy()))
         # Test model on complete data set
         m_test_acc = tf.keras.metrics.Accuracy()
         m_test_loss = tf.keras.metrics.Mean()
@@ -259,7 +275,7 @@ if __name__ == "__main__":
                         choices=['MNIST', 'CIFAR10', 'FashionMNIST', 'SVHN'])
     parser.add_argument('--TASKS', type=int, default=5,
                         help='number of groups in which all classes are divided')
-    parser.add_argument('--BUFFER_SIZE', type=int, default=100,
+    parser.add_argument('--BUFFER_SIZE', type=int, default=10,
                         help='total memory size')
     parser.add_argument('--LEARNING_RATE', type=float, default=0.01,
                         help='learning rate for training (updating networks)')
@@ -275,13 +291,13 @@ if __name__ == "__main__":
                         help='')
     parser.add_argument('--DIST_BATCH_SIZE', type=int, default=256,
                         help='')
-    parser.add_argument('--ITERS', type=int, default=1000,
+    parser.add_argument('--ITERS', type=int, default=5000,
                         help='number of iterations for validation training')
-    parser.add_argument('--VAL_ITERS', type=int, default=1000,
+    parser.add_argument('--VAL_ITERS', type=int, default=5000,
                         help='Validation interval during test training')
     parser.add_argument('--VAL_BATCHES', type=int, default=10,
                         help='Batchsize for validation')
-    parser.add_argument('--log_histogram', default=True, action='store_false',
+    parser.add_argument('--log_histogram', default=False, action='store_false',
                         help='whether to log histogram to wandb')
     parser.add_argument('--current_data_proportion', type=float, default=0.2,
                         help='proportion of data of current classes for updating model in innerloop')
@@ -296,12 +312,16 @@ if __name__ == "__main__":
     parser.add_argument('--activation_1', type=str, default="relu",
                         help='activation function of model used during distillation')
     parser.add_argument('--activation_2', type=str, default="relu",
-                        choices=["relu", "sigmoid", "adjusted_sigmoid"],
+                        choices=["relu", "sigmoid", "adjusted_sigmoid", "leaky_relu", "elu", "swish", "selu", "hard_sigmoid", "tanh", "linear"],
                         help='activation function of model used during distillation')
     parser.add_argument('--activation_3', type=str, default="linear",
                         choices=["relu", "sigmoid", "adjusted_sigmoid", "linear"],
                         help='activation function of model used during distillation')
-    parser.add_argument('--valmodel_activation', type=str, default="relu",
+    parser.add_argument('--val_activation_0', type=str, default="relu",
+                        help='activation function of model used during validation and')
+    parser.add_argument('--val_activation_1', type=str, default="relu",
+                        help='activation function of model used during validation and')
+    parser.add_argument('--val_activation_2', type=str, default="relu",
                         help='activation function of model used during validation and')
     parser.add_argument('--sigmoid_beta', type=float, default=0.0,
                         help='factor beta multiplied to the input of sigmoid function')
@@ -316,21 +336,23 @@ if __name__ == "__main__":
                         help='whether to add sigmoid on the gradients')
     parser.add_argument('--sigmoid_logits', action='store_true', default=False,
                         help='whether to add sigmoid on the logits')
+    parser.add_argument('--tanh_logits', action='store_true', default=False,
+                        help='whether to add tanh on the logits')
     # parser.add_argument('--sigmoid_comp', action='store_false', default=True,
     #                     help='whether to add sigmoid on the composed images')
     # parser.add_argument('--sigmoid_input', action='store_true', default=False,
     #                     help='whether to add sigmoid on the input images')
 
     # Hyperparameters to be heavily tuned
-    parser.add_argument('--RUNS', type=int, default=1,
+    parser.add_argument('--RUNS', type=int, default=3,
                         help='how many times the experiment is repeated')
     parser.add_argument('--num_stylers', type=int, default=2)
 
-    parser.add_argument('--K', type=int, default=5, 
+    parser.add_argument('--K', type=int, default=20, 
                         help='number of distillation iterations')
-    parser.add_argument('--T', type=int, default=5,
+    parser.add_argument('--T', type=int, default=10,
                         help='number of outerloops')
-    parser.add_argument('--I', type=int, default=5,
+    parser.add_argument('--I', type=int, default=10,
                         help='number of update within one outerloop')
     parser.add_argument('--IN', type=int, default=1,
                         help='number of update for innerloop')
@@ -340,7 +362,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_likeli_content', type=float, default=1)
     parser.add_argument('--lambda_cls_content', type=float, default=1)
 
-    parser.add_argument('--group', type=int, default=14)
+    parser.add_argument('--group', type=int, default=44)
 
     parser.add_argument('--plugin', type=str, default='Compositional', 
                         choices=['Compositional', 'Compressed', 'Factorization', 'NewCompositional'],

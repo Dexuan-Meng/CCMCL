@@ -13,7 +13,7 @@ import numpy as np
 import wandb
 from tqdm import tqdm
 import utils
-from utils import get_batch_size, sample_batch, adjusted_sigmoid, comp_sigmoid
+from utils import get_batch_size, sample_batch, adjusted_sigmoid, comp_sigmoid, adjusted_tanh
 
 
 def get_sequential_model(input_shape, activation='sigmoid'):
@@ -555,12 +555,15 @@ class CompositionalCompressor(DataCompressor):
     """
 
     def __init__(self, batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=10, sigmoid_grad=False, 
-                 sigmoid_comp=True, sigmoid_input=False, sigmoid_logits=False):
+                 sigmoid_comp=True, sigmoid_input=False, sigmoid_logits=False, tanh_logits=False):
         super(CompositionalCompressor, self).__init__(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I)
         self.sigmoid_grad = sigmoid_grad
         self.sigmoid_comp = sigmoid_comp
         self.sigmoid_input = sigmoid_input
         self.sigmoid_logits = sigmoid_logits
+        self.tanh_logits = tanh_logits
+        self.gradients = None
+        self.grads_conv3 = None
 
     @tf.function
     def distill_step(self, x, y, c_s, w_s, y_s):
@@ -574,7 +577,8 @@ class CompositionalCompressor(DataCompressor):
         # wandb.log({"unsigmoided grads":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0), num_bins=512)})
         if self.sigmoid_grad:
             for i in range(len(grads)):
-                grads[i] = adjusted_sigmoid(grads[i])
+                # grads[i] = adjusted_sigmoid(grads[i])
+                grads[i] = adjusted_tanh(grads[i])
             # wandb.log({"sigmoided grads":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0), num_bins=512)})
         with tf.GradientTape() as tape:
             # Make prediction using model
@@ -595,12 +599,16 @@ class CompositionalCompressor(DataCompressor):
                 if self.sigmoid_logits:
                     loss_s_1 = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
                     logits_s = adjusted_sigmoid(logits_s)
+                elif self.tanh_logits:
+                    loss_s_1 = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
+                    logits_s = tf.math.tanh(logits_s)
                 loss_s = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_s, logits_s, from_logits=True))
             grads_s = inner_tape.gradient(loss_s, self.mdl.trainable_variables)
             # wandb.log({"unsigmoided grads_s":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads_s], axis=0), num_bins=512),})
             if self.sigmoid_grad:
                 for i in range(len(grads_s)):
-                    grads_s[i] = adjusted_sigmoid(grads_s[i])
+                    # grads_s[i] = adjusted_sigmoid(grads_s[i])
+                    grads_s[i] = adjusted_tanh(grads_s[i])
                 # wandb.log({"sigmoided grads_s":wandb.Histogram(tf.concat([tf.reshape(g, [-1]) for g in grads_s], axis=0), num_bins=512)})
             # Compute cosine similarity
             dist_loss = tf.constant(0.0, dtype=tf.float32)
@@ -653,9 +661,8 @@ class CompositionalCompressor(DataCompressor):
                     dist_loss, grads_dense, grads_dense_norm, grads_conv3, grads_conv3_norm, loss_1, loss = self.distill_step(x_ds, y_ds, c_s, w_s, y_s)
                     distill_step += 1
                 wandb.log({"Distill/Matching Loss": dist_loss, 'Distill_step': starting_step + distill_step})
-                wandb.log({"Distill/categorical loss (unsigmoided logits)": loss_1, 'Distill_step': starting_step + distill_step})
-                if self.sigmoid_logits:
-                    wandb.log({"Distill/categorical loss (sigmoided logits)": loss, 'Distill_step': starting_step + distill_step})
+                self.gradients = grads_dense
+                self.grads_conv3 = grads_conv3
                 
                 # Perform training step
                 x_t, y_t = buf.sample(self.batch_size)
@@ -671,84 +678,34 @@ class CompositionalCompressor(DataCompressor):
                 update_step += 1
                 # Train T iters. However, when T=1, this train doesn't contributes to the algorithms.
                 # Training is still necessary for the verbose.
-            if log_histogram:
-                pass
+            wandb.log({"Distill/categorical loss (unsigmoided logits)": loss_1, 'Distill_step': starting_step + distill_step})
+            if self.sigmoid_logits:
+                wandb.log({"Distill/categorical loss (sigmoided logits)": loss, 'Distill_step': starting_step + distill_step})
             if verbose:
                 print("Iter: {} Dist loss: {:.3} Train loss: {:.3}".format(k, dist_loss, train_loss))
         if log_histogram:
-            # wandb.log({
-            #     "Pixel Distribution/class {}/composed images".format(c):
-            #     wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
-            #     "Pixel Distribution/class {}/unsigmoided images".format(c):
-            #     wandb.Histogram(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1), num_bins=512),
-            #     "Pixel Distribution/class {}/base images".format(c): wandb.Histogram(c_s, num_bins=512),
-            #     })
+            wandb.log({
+                "Pixel Distribution/class {}/composed images".format(c):
+                wandb.Histogram(tf.nn.sigmoid(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)), num_bins=512),
+                "Pixel Distribution/class {}/unsigmoided images".format(c):
+                wandb.Histogram(tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1), num_bins=512),
+                "Pixel Distribution/class {}/base images".format(c): wandb.Histogram(c_s, num_bins=512),
+                })
 
-            Histo_input = np.histogram(x_ds, bins=128)
-            unsigmoided_comp = tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)
-            comp = comp_sigmoid(unsigmoided_comp)
-            Histo_unsigmoided = np.histogram(unsigmoided_comp, bins=128)
-            Histo_comp = np.histogram(comp, bins=128)
-            y_input = Histo_input[0] / np.sum(Histo_input[0])
-            y_unsigmoided = Histo_unsigmoided[0] / np.sum(Histo_unsigmoided[0])
-            y_comp = Histo_comp[0] / np.sum(Histo_comp[0])
-            bins_comp = ((Histo_comp[1][:-1] + Histo_comp[1][1:]) / 2)
-            bins_unsigmoided = ((Histo_unsigmoided[1][:-1] + Histo_unsigmoided[1][1:]) / 2)
-
-            plt.figure()
-            plt.bar(bins_comp, y_input, label="input")
-            plt.bar(bins_comp, y_comp, label="comp")
-            plt.ylim(0)
-            plt.legend()
-            wandb.log({"Pixel Distribution/class {}/Input and composed images - class {}".format(c,c): plt})
+            # Histo_input = np.histogram(x_ds, bins=128)
+            # unsigmoided_comp = tf.reduce_sum(tf.multiply(w_s, tf.expand_dims(c_s, axis=0)), axis=1)
+            # comp = comp_sigmoid(unsigmoided_comp)
+            # Histo_comp = np.histogram(comp, bins=128)
+            # y_input = Histo_input[0] / np.sum(Histo_input[0])
+            # y_comp = Histo_comp[0] / np.sum(Histo_comp[0])
+            # bins_comp = ((Histo_comp[1][:-1] + Histo_comp[1][1:]) / 2)
 
             # plt.figure()
-            # plt.bar(bins_unsigmoided, y_unsigmoided, label="unsigmoided")
+            # plt.bar(bins_comp, y_input, label="input")
+            # plt.bar(bins_comp, y_comp, label="comp")
             # plt.ylim(0)
             # plt.legend()
-            # wandb.log({"Pixel Distribution/class {}/Weighted Sum - class {}".format(c, c): plt})
-
-            Histo_real = np.histogram(grads_dense, bins=256)
-            # Histo_custum = np.histogram(grads_dense / tf.reduce_sum(grads_dense * grads_dense), bins=256)
-            Histo_normalized = np.histogram(grads_dense_norm, bins=256)
-            bins_real = ((Histo_real[1][:-1] + Histo_real[1][1:]) / 2)
-            # bins_custum = ((Histo_custum[1][:-1] + Histo_custum[1][1:]) / 2)
-            bins_normalized = ((Histo_normalized[1][:-1] + Histo_normalized[1][1:]) / 2)
-
-            plt.figure()
-            plt.scatter(bins_real, Histo_real[0], label="real gradients")
-            plt.legend()
-            wandb.log({"Pixel Distribution/class {}/Distribution of real gradients(dense) - class {}".format(c,c): plt})
-
-            # plt.figure()
-            # plt.bar(bins_custum, Histo_custum[0], label="gradients normalized along all axes")
-            # plt.legend()
-            # wandb.log({"Pixel Distribution/class {}/Distribution of gradients normalized along all axes - class {}".format(c,c): plt})
-
-            plt.figure()
-            plt.scatter(bins_normalized, Histo_normalized[0], label="normalized gradients")
-            plt.legend()
-            wandb.log({"Pixel Distribution/class {}/Distribution of normalized gradients(dense) - class {}".format(c,c): plt})
-
-            Histo_real_conv3 = np.histogram(grads_conv3, bins=128)
-            Histo_normalized_conv3 = np.histogram(grads_conv3_norm, bins=128)
-            bins_real_conv3 = ((Histo_real_conv3[1][:-1] + Histo_real_conv3[1][1:]) / 2)
-            bins_normalized_conv3 = ((Histo_normalized_conv3[1][:-1] + Histo_normalized_conv3[1][1:]) / 2)
-
-            plt.figure()
-            plt.scatter(bins_real_conv3, Histo_real_conv3[0], label="real gradients")
-            plt.legend()
-            wandb.log({"Pixel Distribution/class {}/Distribution of real gradients(conv3) - class {}".format(c,c): plt})
-
-            # plt.figure()
-            # plt.bar(bins_custum, Histo_custum[0], label="gradients normalized along all axes")
-            # plt.legend()
-            # wandb.log({"Pixel Distribution/class {}/Distribution of gradients normalized along all axes - class {}".format(c,c): plt})
-
-            plt.figure()
-            plt.scatter(bins_normalized_conv3, Histo_normalized_conv3[0], label="normalized gradients")
-            plt.legend()
-            wandb.log({"Pixel Distribution/class {}/Distribution of normalized gradients(conv3) - class {}".format(c,c): plt})
+            # wandb.log({"Pixel Distribution/class {}/Input and composed images - class {}".format(c,c): plt})
 
             for i in range(grads_dense.numpy().shape[1]):
                 if i == c:
@@ -781,16 +738,18 @@ class CompositionalBalancedBuffer(object):
 
         self.syn_images = None # all synthetic images in one tf Tensor
         self.syn_labels = None # all labels for synthetic images in one tf Tensor
+        self.dense_layer_gradients = []
+        self.conv3_layer_gradients = []
 
         super(CompositionalBalancedBuffer, self).__init__()
 
     def compress_add(self, ds, c, mdl, batch_size=128, train_learning_rate=0.01, dist_learning_rate=0.05, 
                      img_shape=(28, 28, 1), num_bases=10, K=20, T=10, I=10, log_histogram=False, verbose=False,
-                     sigmoid_grad=False, sigmoid_comp=True, sigmoid_input=False, sigmoid_logits=False):
+                     sigmoid_grad=False, sigmoid_comp=True, sigmoid_input=False, sigmoid_logits=False, tanh_logits=False):
         # Create compressor
         comp = CompositionalCompressor(batch_size, train_learning_rate, dist_learning_rate, K, T, mdl, I=I,
                                        sigmoid_grad=sigmoid_grad, sigmoid_comp=sigmoid_comp, sigmoid_input=sigmoid_input,
-                                       sigmoid_logits=sigmoid_logits)
+                                       sigmoid_logits=sigmoid_logits, tanh_logits=tanh_logits)
         self.sigmoid_comp = sigmoid_comp
         # Compress data
         num_weights = int(2*num_bases)
@@ -798,7 +757,8 @@ class CompositionalBalancedBuffer(object):
         print("Compressing class {} down to {} weights and {} components...".format(c, num_weights, num_components))
         c_s, w_s, y_s = comp.compress(ds, c, img_shape, num_weights, num_components, self, log_histogram=log_histogram, 
                                       verbose=False)
-        
+        self.dense_layer_gradients.append(comp.gradients.numpy())
+        self.conv3_layer_gradients.append(comp.grads_conv3.numpy())
         self.get_storage(c_s, w_s)
         wandb.log({'image_params_count': self.image_params_count,
                    'weight_params_count': self.weight_params_count,
